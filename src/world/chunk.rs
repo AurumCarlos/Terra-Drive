@@ -327,6 +327,11 @@ pub fn build_chunk(gen: &Generator, id: NodeId) -> ChunkMesh {
                 Some((paint, k)) => (std::array::from_fn(|c| col[c] + (paint[c] - col[c]) * k), canopy * (1.0 - k)),
                 None => (col, canopy),
             };
+            // Les routes de montagne.
+            let (col, canopy) = match gen.cities.mountains.paint(dir, id.spacing()) {
+                Some((paint, k)) => (std::array::from_fn(|c| col[c] + (paint[c] - col[c]) * k), canopy * (1.0 - k)),
+                None => (col, canopy),
+            };
             let mut color = encode_color(std::array::from_fn(|c| col[c] + (FAR_RIVER[c] - col[c]) * surface.paint));
             color[3] = (canopy * (1.0 - surface.paint) * 255.0) as u8;
             let (rock_color, strata) = (site.rock, site.strata);

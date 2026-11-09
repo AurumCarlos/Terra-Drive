@@ -37,7 +37,7 @@ pub struct Path {
 }
 
 impl Path {
-    fn new(points: Vec<DVec3>, closed: bool, half: f64) -> Self {
+    pub(super) fn new(points: Vec<DVec3>, closed: bool, half: f64) -> Self {
         let r = planet_radius();
         let mut s = vec![0.0];
         let mut along = 0.0;
@@ -178,7 +178,12 @@ impl Circuit {
 const MAX_GRADE: f64 = 0.12;
 
 /// Ecrete les pentes trop fortes : deux points voisins trop eloignes en altitude se rapprochent.
-fn limit_grade(mut v: Vec<f64>, points: &[DVec3], closed: bool) -> Vec<f64> {
+fn limit_grade(v: Vec<f64>, points: &[DVec3], closed: bool) -> Vec<f64> {
+    limit_grade_to(v, points, closed, MAX_GRADE)
+}
+
+/// Ecrete les pentes au-dela de `max` (en m/m).
+pub(super) fn limit_grade_to(mut v: Vec<f64>, points: &[DVec3], closed: bool, max: f64) -> Vec<f64> {
     let n = v.len();
     let pairs = if closed { n } else { n - 1 };
     let r = super::generator::planet_radius();
@@ -186,7 +191,7 @@ fn limit_grade(mut v: Vec<f64>, points: &[DVec3], closed: bool) -> Vec<f64> {
         let mut worst: f64 = 0.0;
         for k in 0..pairs {
             let j = (k + 1) % n;
-            let step = MAX_GRADE * (points[j] - points[k]).length() * r;
+            let step = max * (points[j] - points[k]).length() * r;
             let d = v[j] - v[k];
             if d.abs() > step {
                 let fix = (d.abs() - step) * 0.5 * d.signum();
@@ -200,7 +205,7 @@ fn limit_grade(mut v: Vec<f64>, points: &[DVec3], closed: bool) -> Vec<f64> {
         }
     }
     // Ecretage final aller-retour : garantit la pente maximale meme si la relaxation n'a pas converge.
-    let step = |k: usize, j: usize| MAX_GRADE * (points[j] - points[k]).length() * r * 0.999;
+    let step = |k: usize, j: usize| max * (points[j] - points[k]).length() * r * 0.999;
     for _ in 0..4 {
         for k in 0..pairs {
             let j = (k + 1) % n;
@@ -217,7 +222,7 @@ fn limit_grade(mut v: Vec<f64>, points: &[DVec3], closed: bool) -> Vec<f64> {
 }
 
 /// Moyenne glissante appliquee deux fois (boucle ou trace ouvert).
-fn smooth(v: &[f64], r: usize, closed: bool) -> Vec<f64> {
+pub(super) fn smooth(v: &[f64], r: usize, closed: bool) -> Vec<f64> {
     let n = v.len();
     let mut cur = v.to_vec();
     for _ in 0..2 {
@@ -265,7 +270,7 @@ pub struct Circuits {
     index: TrackIndex,
 }
 
-fn key(dir: DVec3) -> (u8, i32, i32) {
+pub(super) fn key(dir: DVec3) -> (u8, i32, i32) {
     let a = dir.abs();
     let (face, u, v) = if a.x >= a.y && a.x >= a.z {
         (if dir.x > 0.0 { 0 } else { 1 }, dir.y / a.x, dir.z / a.x)
@@ -279,7 +284,7 @@ fn key(dir: DVec3) -> (u8, i32, i32) {
 }
 
 /// Repere tangent en un point : est, nord.
-fn tangent_frame(dir: DVec3) -> (DVec3, DVec3) {
+pub(super) fn tangent_frame(dir: DVec3) -> (DVec3, DVec3) {
     let east = if dir.y.abs() > 0.999 { DVec3::X } else { DVec3::Y.cross(dir).normalize() };
     (east, dir.cross(east))
 }

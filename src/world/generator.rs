@@ -695,6 +695,7 @@ impl Generator {
         let mut s = self.surface_natural(dir, d);
         self.cities.highways.shape_ground(self, dir, &mut s);
         self.cities.circuits.shape_ground(self, dir, &mut s);
+        self.cities.mountains.shape_ground(self, dir, &mut s);
         s
     }
 
@@ -1495,7 +1496,7 @@ impl Generator {
                 }
             }
         }
-        // Les autoroutes en rouge, les villes en blanc.
+        // Les autoroutes en rouge, les routes de montagne en orange, les villes en blanc.
         for hw in &self.cities.highways.list {
             for p in hw
                 .points()
@@ -1503,6 +1504,12 @@ impl Generator {
                 .step_by(((10_000.0 * 2048.0 / w as f64) / super::highway::POINT_STEP).max(1.0) as usize)
             {
                 stamp(*p, [215, 45, 30]);
+            }
+        }
+        // Les routes de montagne en orange.
+        for road in &self.cities.mountains.list {
+            for p in road.paths[0].points.iter().step_by(((2_000.0 * 2048.0 / w as f64) / 8.0).max(1.0) as usize) {
+                stamp(*p, [250, 160, 30]);
             }
         }
         for c in &self.cities.list {

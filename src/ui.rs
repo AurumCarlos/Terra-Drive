@@ -52,6 +52,8 @@ pub struct HudData {
     pub driving: Option<(f64, i32, f64, bool)>,
     /// Circuit proche : nom, lieu du vrai circuit, distance (m).
     pub circuit: Option<(&'static str, &'static str, f64)>,
+    /// Route de montagne proche : nom, epingles, distance (m).
+    pub mountain: Option<(String, usize, f64)>,
 }
 
 pub struct MenuState {
@@ -165,6 +167,13 @@ fn hud(ctx: &egui::Context, d: &HudData) {
                             line(ui, format!("Circuit   {name} ({place})"));
                         } else {
                             line(ui, format!("Circuit   {name} a {}", format_distance(*dist)));
+                        }
+                    }
+                    if let Some((name, pins, dist)) = &d.mountain {
+                        if *dist < 30.0 {
+                            line(ui, format!("Route     {name} ({pins} epingles)"));
+                        } else {
+                            line(ui, format!("Route     {name} a {}", format_distance(*dist)));
                         }
                     }
                     line(ui, format!("Rendu     {}", format_distance(d.render_distance)));

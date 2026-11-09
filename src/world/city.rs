@@ -2179,6 +2179,8 @@ pub struct Cities {
     pub highways: Highways,
     /// Un circuit de course par ville, quand la place le permet.
     pub circuits: super::circuit::Circuits,
+    /// Une route de montagne par ville au pied d'un relief.
+    pub mountains: super::mountain::MountainRoads,
 }
 
 fn bucket(dir: DVec3) -> (u8, i32, i32) {
@@ -2229,6 +2231,7 @@ impl Cities {
             buckets: FastMap::default(),
             highways: Highways::empty(),
             circuits: super::circuit::Circuits::empty(),
+            mountains: super::mountain::MountainRoads::empty(),
         }
     }
 
@@ -2417,6 +2420,8 @@ impl Cities {
         step("autoroutes");
         let circuits = super::circuit::Circuits::build(gen, &mut list, &highways);
         step("circuits");
+        let mountains = super::mountain::MountainRoads::build(gen, &mut list, &highways, &circuits);
+        step("routes de montagne");
         let mut buckets: FastMap<(u8, i32, i32), Vec<u32>> = FastMap::default();
         for (i, c) in list.iter().enumerate() {
             let mut keys = vec![bucket(c.dir)];
@@ -2432,7 +2437,7 @@ impl Cities {
                 buckets.entry(key).or_default().push(i as u32);
             }
         }
-        Self { list, buckets, highways, circuits }
+        Self { list, buckets, highways, circuits, mountains }
     }
 
     /// Villes dont l'influence peut atteindre ce point.

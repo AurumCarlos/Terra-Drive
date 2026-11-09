@@ -1798,6 +1798,7 @@ pub fn build_city_mesh(gen: &Generator, id: NodeId, origin: DVec3, terrain: &Ter
     }
     highway_mesh(&mut out, gen, id);
     circuit_mesh(&mut out, gen, id);
+    mountain_mesh(&mut out, gen, id);
     if out.i.is_empty() {
         return None;
     }
@@ -2224,6 +2225,109 @@ fn circuit_mesh(out: &mut Out, gen: &Generator, id: NodeId) {
             let wall = -(half + 1.5);
             out.band(&a, &b, wall, 0.0, wall, 1.2, [[0.0, 0.0]; 4], plain([0.62, 0.62, 0.6]));
             out.band(&a, &b, wall, 1.2, wall, 0.0, [[0.0, 0.0]; 4], plain([0.62, 0.62, 0.6]));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Routes de montagne
+
+/// Les routes de montagne qui traversent un chunk : chaussee a deux voies, et du cote du vide,
+/// glissieres d'acier sur poteaux ou parapet de pierre.
+fn mountain_mesh(out: &mut Out, gen: &Generator, id: NodeId) {
+    let roads = &gen.cities.mountains;
+    if roads.list.is_empty() || id.lod > 6 {
+        return;
+    }
+    let tier = match id.lod {
+        0 | 1 => Tier::Full,
+        2 | 3 => Tier::Mid,
+        _ => Tier::Low,
+    };
+    let stride = match tier {
+        Tier::Full => 1,
+        Tier::Mid => 2,
+        Tier::Low => 4,
+    };
+    let cells = (id.size() / 250.0).ceil().clamp(2.0, 96.0) as usize;
+    let mut segs: HashSet<(u32, u8, u32)> = HashSet::new();
+    for i in 0..=cells {
+        for j in 0..=cells {
+            let d = id.dir_at(i as f64 / cells as f64, j as f64 / cells as f64);
+            for &(c, p, k) in roads.segments_at(d) {
+                segs.insert((c, p, k - k % stride as u32));
+            }
+        }
+    }
+    let own = |d: DVec3| id.locate(d).is_some_and(|(s, t)| (0.0..1.0).contains(&s) && (0.0..1.0).contains(&t));
+    let mut segs: Vec<_> = segs.into_iter().collect();
+    segs.sort_unstable();
+    let r = planet_radius();
+    let detail = Detail::for_spacing(8.0);
+    for (c, p, k) in segs {
+        let road = &roads.list[c as usize];
+        let path = &road.paths[p as usize];
+        let (k, n) = (k as usize, path.points.len());
+        let k1 = if k + stride >= n {
+            if path.closed {
+                0
+            } else {
+                n - 1
+            }
+        } else {
+            k + stride
+        };
+        if k1 == k || !own((path.points[k] + path.points[k1]).normalize()) {
+            continue;
+        }
+        let levels = &road.levels(gen)[p as usize];
+        let station = |q: usize| {
+            let dir = path.points[q];
+            let fwd = path.tangent(q);
+            let s = if q == 0 && k != 0 { path.length() } else { path.s[q] };
+            Station {
+                s,
+                dir,
+                left: dir.cross(fwd).normalize(),
+                fwd,
+                p: Profile { road: levels[q], ground: levels[q], wet: false },
+            }
+        };
+        let (a, b) = (station(k), station(k1));
+        let half = path.half;
+        // Deux voies etroites : axe en tirets, lignes de rive (style 1 dans city.wgsl).
+        let pt = Paint { color: enc([0.045, 0.045, 0.05]), mat: [mat::ROAD, 1, (half * 4.0) as u8, 0] };
+        out.band(&a, &b, half, 0.06, -half, 0.06, [[half, a.s], [half, b.s], [-half, b.s], [-half, a.s]], pt);
+        if tier == Tier::Low {
+            continue;
+        }
+        // Du cote ou le terrain naturel tombe sous la route, une protection.
+        for side in [-1.0f64, 1.0] {
+            let drop = |st: &Station| {
+                let d = (st.dir + st.left * (side * (half + 9.0) / r)).normalize();
+                st.p.road - gen.surface_natural(d, &detail).height as f64
+            };
+            if drop(&a).max(drop(&b)) < 2.5 {
+                continue;
+            }
+            if road.stone {
+                // Parapet de pierre : 50 cm d'epaisseur, 60 cm au-dessus de la chaussee, chaperon plus clair.
+                let (xi, xo) = (side * (half + 0.4), side * (half + 0.9));
+                let (l, rr) = if side > 0.0 { (xo, xi) } else { (xi, xo) };
+                let stone = plain([0.21, 0.19, 0.16]);
+                out.band(&a, &b, l, -0.6, l, 0.55, [[0.0, 0.0]; 4], stone);
+                out.band(&a, &b, rr, 0.55, rr, -0.3, [[0.0, 0.0]; 4], stone);
+                out.band(&a, &b, l, 0.55, rr, 0.6, [[0.0, 0.0]; 4], plain([0.3, 0.28, 0.25]));
+            } else {
+                let x = side * (half + 0.7);
+                let steel = with([0.45, 0.46, 0.47], mat::PAINT);
+                out.band(&a, &b, x, 0.85, x, 0.5, [[0.0, 0.0]; 4], steel);
+                out.band(&a, &b, x, 0.5, x, 0.85, [[0.0, 0.0]; 4], steel);
+                if tier == Tier::Full {
+                    let post = plain([0.3, 0.3, 0.31]);
+                    out.slab(&a, x + 0.07 * side, x + 0.2 * side, -0.07, 0.07, -0.4, 0.8, post);
+                }
+            }
         }
     }
 }

@@ -169,16 +169,17 @@ fn plane_under(world: &Generator, p: DVec3, heading: DVec3) -> (Plane, f64) {
     if n.dot(dir) < 0.0 {
         n = -n;
     }
-    // Asphalte : rues, autoroutes, circuits ; sinon terre et herbe.
+    // Asphalte : rues, autoroutes, circuits, routes de montagne ; sinon terre et herbe.
     let paved = world.cities.ground(dir, world) == crate::world::city::Ground::Road
         || world.cities.highways.clearance(dir).is_some_and(|c| c < 0.5)
-        || world.cities.circuits.on_track(dir);
+        || world.cities.circuits.on_track(dir)
+        || world.cities.mountains.on_road(dir);
     let grip = if depth > 0.15 {
-        0.45
+        0.55
     } else if paved {
         1.0
     } else {
-        0.68
+        0.8
     };
     (Plane { point: q0, normal: n, grip, rolling: if paved { 0.012 } else { 0.05 } }, depth)
 }

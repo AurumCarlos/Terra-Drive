@@ -29,6 +29,8 @@ struct Options {
     cockpit: bool,
     /// Demarre sur la grille du circuit le plus proche.
     circuit: bool,
+    /// Demarre au pied de la route de montagne la plus proche.
+    mountain: bool,
 }
 
 struct Explorer {
@@ -216,6 +218,41 @@ impl Game for Explorer {
                 println!("circuit : {} ({}), {:.0} m", c.name(), c.location(), track.length());
             }
         }
+        // Au pied de la route de montagne la plus proche, tourne vers la montee.
+        if self.options.mountain {
+            if let Some((road, _)) = ctx.world.cities.mountains.nearest(dir) {
+                // TERRA_MOUNTAIN_AT=0.6 : plus haut sur la route (verification).
+                let (at, fwd) = match std::env::var("TERRA_MOUNTAIN_AT").ok().and_then(|v| v.parse::<f64>().ok()) {
+                    Some(f) => {
+                        let path = &road.paths[0];
+                        let k = ((path.points.len() - 2) as f64 * f.clamp(0.0, 1.0)) as usize;
+                        (path.points[k], path.tangent(k))
+                    }
+                    None => road.start(),
+                };
+                let left = at.cross(fwd).normalize();
+                let lane = (at - left * (1.7 / planet_radius())).normalize();
+                self.grid = Some((lane, fwd));
+                let east = DVec3::Y.cross(lane).normalize_or(DVec3::X);
+                let north = lane.cross(east);
+                self.options.yaw = Some(fwd.dot(east).atan2(fwd.dot(north)) as f32);
+                dir = lane;
+                altitude = altitude.min(1.75);
+                println!(
+                    "route de montagne : {}, {:.1} km, {:.0} m de denivele, {} epingles",
+                    road.name,
+                    road.paths[0].length() / 1000.0,
+                    road.rise(ctx.world),
+                    road.hairpins.len()
+                );
+                if std::env::var("TERRA_DEBUG_MOUNTAIN").is_ok() {
+                    for h in &road.hairpins {
+                        let (lat, lon) = terra::world::generator::dir_to_lat_lon(*h);
+                        println!("  epingle {lat:.5},{lon:.5}");
+                    }
+                }
+            }
+        }
         // A pied en ville : sur la chaussee la plus proche, pas dans un mur.
         if altitude <= 10.0 && self.grid.is_none() {
             if let Some(street) = ctx.world.cities.street_near(dir, ctx.world) {
@@ -390,6 +427,10 @@ fn main() {
                 options.drive = true;
                 options.circuit = true;
             }
+            "--montagne" => {
+                options.drive = true;
+                options.mountain = true;
+            }
             "--screenshot" => config.auto_screenshot = Some(PathBuf::from(value())),
             "--help" | "-h" => usage(""),
             other => usage(&format!("option inconnue : {other}")),
@@ -440,6 +481,7 @@ fn usage(message: &str) -> ! {
          \n  --drive             demarre au volant d'une voiture (E : monter ou descendre)\
          \n  --cockpit           idem, vue du conducteur\
          \n  --circuit           au volant, sur la grille du circuit le plus proche\
+         \n  --montagne          au volant, au pied de la route de montagne la plus proche\
          \n  --regenerate N      remplace la planete au demarrage (verification)\
          \n  --autopilot m/s     vol de mesure de 30 s, affiche les temps d'image\
          \n  --screenshot f.png  attend le chargement, enregistre l'image et quitte"

@@ -229,6 +229,10 @@ pub fn build_trees(gen: &Generator, cell: NodeId) -> CellObjects {
             if gen.cities.circuits.clearance(dir).is_some_and(|d| d < super::circuit::RUNOFF + 6.0) {
                 continue;
             }
+            // Ni sur les routes de montagne : les arbres viennent jusqu'au bord du talus.
+            if gen.cities.mountains.clearance(dir).is_some_and(|d| d < 4.0) {
+                continue;
+            }
             match ground {
                 Ground::Wild => {}
                 Ground::Park | Ground::Garden => {
@@ -393,6 +397,9 @@ pub fn build_grass(gen: &Generator, cell: NodeId) -> GrassCell {
             }
             // Pelouse tondue autour des circuits.
             if gen.cities.circuits.clearance(dir).is_some_and(|d| d < super::circuit::RUNOFF) {
+                continue;
+            }
+            if gen.cities.mountains.clearance(dir).is_some_and(|d| d < 0.4) {
                 continue;
             }
             let pos = dir * (planet_radius() + h as f64 - 0.12) - center;

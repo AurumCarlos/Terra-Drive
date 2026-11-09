@@ -40,8 +40,8 @@ const DRIVETRAIN: f64 = 0.9;
 const BRAKE_TORQUE: [f64; 2] = [2600.0, 1450.0];
 const HANDBRAKE_TORQUE: f64 = 2600.0;
 const SHIFT_TIME: f64 = 0.18;
-/// Adherence des pneus sport sur asphalte sec.
-const TIRE_MU: f64 = 1.1;
+/// Adherence des pneus sport sur asphalte sec, genereuse : la voiture colle a la route.
+const TIRE_MU: f64 = 1.4;
 /// Longueurs de relaxation du pneu (m) : en long, en travers.
 const RELAX: [f64; 2] = [0.3, 0.55];
 
@@ -713,7 +713,7 @@ mod tests {
     }
 
     #[test]
-    fn cornering_grip_is_close_to_one_g_and_the_body_rolls_out() {
+    fn cornering_grip_is_above_one_g_and_the_body_rolls_out() {
         let mut ch = car();
         ch.launch(20.0);
         ch.gear = 3;
@@ -725,7 +725,7 @@ mod tests {
         let yaw = ch.yaw_rate(DVec3::Y);
         assert!(yaw > 0.0, "a droite");
         let lateral = yaw * ch.vx();
-        assert!((5.0..12.0).contains(&lateral), "acceleration laterale {lateral:.1} m/s2");
+        assert!((9.0..16.0).contains(&lateral), "acceleration laterale {lateral:.1} m/s2");
         // Virage a droite : la caisse penche vers la gauche, le cote droit se leve.
         assert!((0.01..0.12).contains(&roll), "roulis {roll:.3}");
     }

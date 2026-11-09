@@ -590,6 +590,10 @@ impl State {
                 .max(0.0);
             (dist < 6000.0).then(|| (c.name(), c.location(), dist))
         });
+        self.hud.mountain = self.generator.cities.mountains.nearest(up).and_then(|(road, far)| {
+            let dist = self.generator.cities.mountains.clearance(up).unwrap_or(far).max(0.0);
+            (dist < 4000.0).then(|| (road.name.clone(), road.hairpins.len(), dist))
+        });
         self.hud.city = self.generator.cities.nearest(up).map(|(i, dist)| {
             let c = &self.generator.cities.list[i];
             let east = DVec3::Y.cross(up).normalize_or(DVec3::X);

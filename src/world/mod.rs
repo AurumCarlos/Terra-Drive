@@ -9,6 +9,7 @@ pub mod generator;
 pub mod highway;
 pub mod hydrology;
 pub mod landforms;
+pub mod mountain;
 pub mod noise;
 pub mod scatter;
 pub mod streaming;

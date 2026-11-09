@@ -234,28 +234,45 @@ fn tiles(i: VsOut, base: vec3f, px: f32) -> vec3f {
     return mix(detailed, base * 0.85, fade) * (0.85 + 0.3 * moss);
 }
 
-fn road(i: VsOut, base: vec3f, px: f32) -> vec3f {
+// Ligne de demi-largeur w, a la distance d de son axe, sur des pixels de px metres. De loin, elle garde
+// au moins la largeur d'un pixel et palit d'autant, un peu rehaussee (la peinture routiere renvoie la
+// lumiere) : elle reste visible au lieu de s'effacer.
+fn paint_line(d: f32, w: f32, px: f32) -> f32 {
+    let aa = max(px, 0.02);
+    let h = max(w, px * 0.5);
+    return smoothstep(h + aa * 0.5, h - aa * 0.5, d) * min(1.0, 1.6 * w / h);
+}
+
+// Tirets de `on` (fraction peinte) par periode ; de loin, leur moyenne le long de la route.
+fn dashes(s: f32, period: f32, on: f32, px: f32) -> f32 {
+    return mix(step(fract(s / period), on), on, smoothstep(period * 0.05, period * 0.25, px));
+}
+
+// px : taille d'un pixel en metres en travers (x) et le long (y) de la chaussee. En vue rasante, le
+// pixel s'allonge surtout le long de la route : les lignes, fines en travers, restent nettes bien plus loin.
+fn road(i: VsOut, base: vec3f, px: vec2f) -> vec3f {
     let x = i.uv.x;
     let s = i.uv.y;
     let cw = f32(i.mat.z) / 4.0;
     let lanes = i.mat.y;
+    let pxx = max(px.x, 1e-4);
+    let pxs = max(px.y, 1e-4);
     var c = base * (0.75 + 0.5 * vnoise(i.world * 0.6, 4096.0 * 0.6)) * (0.9 + 0.2 * vnoise(i.world * 4.0, 4096.0 * 4.0));
     // Rapiecages plus sombres, ornieres plus claires.
     c *= mix(1.0, 0.7, smoothstep(0.62, 0.66, vnoise(i.world * 0.08, 4096.0 * 0.08)));
     let lane = abs(fract(abs(x) / 3.5) - 0.5);
     c *= 1.0 + 0.12 * smoothstep(0.32, 0.18, lane);
-    let aa = max(px, 0.02);
     var paint = 0.0;
     if lanes >= 8u {
         // Autoroute : x part du terre-plein. Ligne de guidage, voies en longs tirets, ligne de rive.
         let n = f32(lanes - 8u);
         let edge = 0.9 + n * 3.5;
-        paint = max(paint, smoothstep(0.08 + aa, 0.08 - aa, abs(x - 0.75)));
-        paint = max(paint, smoothstep(0.12 + aa, 0.12 - aa, abs(x - edge - 0.12)));
+        paint = max(paint, paint_line(abs(x - 0.75), 0.08, pxx));
+        paint = max(paint, paint_line(abs(x - edge - 0.12), 0.12, pxx));
         let k = (x - 0.9) / 3.5;
         let near = abs(k - round(k)) * 3.5;
         if round(k) >= 1.0 && round(k) <= n - 1.0 {
-            paint = max(paint, smoothstep(0.08 + aa, 0.08 - aa, near) * step(fract(s / 24.0), 0.42));
+            paint = max(paint, paint_line(near, 0.08, pxx) * dashes(s, 24.0, 0.42, pxs));
         }
         // La bande d'arret, moins usee, est plus claire ; les voies portent des traces de roues.
         if x > edge + 0.25 {
@@ -266,27 +283,27 @@ fn road(i: VsOut, base: vec3f, px: f32) -> vec3f {
         }
     } else if lanes == 7u {
         // Piste de course : lignes blanches de bord, trace plus sombre de la gomme au milieu.
-        paint = max(paint, smoothstep(0.1 + aa, 0.1 - aa, abs(abs(x) - (cw - 0.45))));
+        paint = max(paint, paint_line(abs(abs(x) - (cw - 0.45)), 0.1, pxx));
         c *= 1.0 - 0.18 * smoothstep(cw * 0.5, 0.0, abs(x + 0.8 * sin(s / 37.0)));
     } else if lanes >= 1u {
         // Axe en tirets (3 m peints, 6 m vides) ; double ligne continue sur les avenues.
-        let dash = step(fract(s / 9.0), 0.34);
         if lanes == 1u {
-            paint = max(paint, smoothstep(0.075 + aa, 0.075 - aa, abs(x)) * dash);
+            paint = max(paint, paint_line(abs(x), 0.075, pxx) * dashes(s, 9.0, 0.34, pxs));
         } else {
-            paint = max(paint, smoothstep(0.08 + aa, 0.08 - aa, abs(abs(x) - 0.18)));
+            paint = max(paint, paint_line(abs(abs(x) - 0.18), 0.08, pxx));
             // Voies de 3.5 m en tirets.
             let k = abs(x) / 3.5;
             let near = abs(k - round(k)) * 3.5;
             if round(k) >= 1.0 && abs(x) < cw - 1.0 {
-                paint = max(paint, smoothstep(0.07 + aa, 0.07 - aa, near) * step(fract(s / 9.0), 0.34));
+                paint = max(paint, paint_line(near, 0.07, pxx) * dashes(s, 9.0, 0.34, pxs));
             }
         }
         // Lignes de rive.
-        paint = max(paint, smoothstep(0.07 + aa, 0.07 - aa, abs(abs(x) - (cw - 0.35))));
+        paint = max(paint, paint_line(abs(abs(x) - (cw - 0.35)), 0.07, pxx));
     }
-    let worn = 0.55 + 0.45 * vnoise(i.world * 1.3, 4096.0 * 1.3);
-    paint *= worn * (1.0 - smoothstep(0.08, 0.3, px));
+    // L'usure de la peinture ; tres loin seulement, les lignes se fondent dans la chaussee.
+    let worn = mix(0.55 + 0.45 * vnoise(i.world * 1.3, 4096.0 * 1.3), 0.8, smoothstep(0.2, 1.0, pxx));
+    paint *= worn * (1.0 - smoothstep(2.0, 6.0, pxx));
     return mix(c, vec3f(0.62, 0.62, 0.6), paint);
 }
 
@@ -768,6 +785,8 @@ fn fs(i: VsOut) -> @location(0) vec4f {
     let night = 1.0 - smoothstep(-0.05, 0.1, dot(up, g.sun_dir.xyz));
     let m = i.mat.x;
     let px = max(length(fwidth(i.uv)), 1e-4);
+    // Pour les chaussees : taille du pixel en travers et le long, separement.
+    let px_road = fwidth(i.uv);
     var look: Look;
     look.albedo = i.color.rgb;
     look.n = n;
@@ -797,7 +816,7 @@ fn fs(i: VsOut) -> @location(0) vec4f {
             look.mirror = 0.08;
         }
         case 5u: {
-            look.albedo = road(i, i.color.rgb, px);
+            look.albedo = road(i, i.color.rgb, px_road);
             look.gloss = 0.03;
         }
         case 6u: {
