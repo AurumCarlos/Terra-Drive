@@ -6,6 +6,7 @@ pub mod meshes;
 pub mod noise_tex;
 
 use crate::camera::Camera;
+use crate::error::Error;
 use crate::sky::Sky;
 use crate::world::chunk::{build_indices, ChunkMesh, NodeId, TerrainVertex, GRID_INDEX_COUNT};
 use crate::world::city_mesh::CityVertex;
@@ -62,7 +63,8 @@ fn add_instances(
         Some(m) => {
             let reach = |c: usize| {
                 let p = m[c].project_point3(offset);
-                let (cell, margin) = (CELL_CULL_RADIUS / CASCADE_RADII[c], 1.0 + SHADOW_OBJECT_RADIUS / CASCADE_RADII[c]);
+                let (cell, margin) =
+                    (CELL_CULL_RADIUS / CASCADE_RADII[c], 1.0 + SHADOW_OBJECT_RADIUS / CASCADE_RADII[c]);
                 (p.x.abs().max(p.y.abs()) - cell <= margin, p.x.abs().max(p.y.abs()) + cell <= margin)
             };
             let tests: [(bool, bool); CASCADES] = std::array::from_fn(reach);
@@ -344,12 +346,18 @@ fn cascade_matrices(cam: &Camera, light_dir: Vec3) -> [Mat4; CASCADES] {
 }
 
 impl Renderer {
-    pub async fn new(window: Arc<Window>, vsync: bool) -> Result<Self, String> {
+    /// Ouvre la carte graphique la plus rapide capable de dessiner dans `window` et prepare tous les
+    /// pipelines. `vsync` cale l'affichage sur l'ecran.
+    ///
+    /// # Errors
+    ///
+    /// Si aucune carte ne convient, ou si elle refuse la surface ou le peripherique.
+    pub async fn new(window: Arc<Window>, vsync: bool) -> crate::Result<Self> {
         // Vulkan compile les shaders bien plus vite que le chemin HLSL/FXC de DX12.
         let (surface, adapter) = 'found: {
             for backends in [wgpu::Backends::VULKAN, wgpu::Backends::PRIMARY] {
                 let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor { backends, ..Default::default() });
-                let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
+                let surface = instance.create_surface(window.clone())?;
                 let adapter = instance
                     .request_adapter(&wgpu::RequestAdapterOptions {
                         power_preference: wgpu::PowerPreference::HighPerformance,
@@ -361,29 +369,39 @@ impl Renderer {
                     break 'found (surface, adapter);
                 }
             }
-            return Err("aucune carte graphique compatible".to_string());
+            return Err(Error::NoAdapter);
         };
         let info = adapter.get_info();
         let adapter_name = format!("{} ({:?})", info.name, info.backend);
-        let gpu_profile = std::env::var("TERRA_PROFILE").is_ok() && adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
+        let gpu_profile =
+            std::env::var("TERRA_PROFILE").is_ok() && adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
 
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: Some("terra"),
-                    required_features: if gpu_profile { wgpu::Features::TIMESTAMP_QUERY } else { wgpu::Features::empty() },
+                    required_features: if gpu_profile {
+                        wgpu::Features::TIMESTAMP_QUERY
+                    } else {
+                        wgpu::Features::empty()
+                    },
                     required_limits: wgpu::Limits::default(),
                     memory_hints: wgpu::MemoryHints::Performance,
                 },
                 None,
             )
-            .await
-            .map_err(|e| e.to_string())?;
+            .await?;
         let gpu_timer = gpu_profile.then(|| gpu_timer::GpuTimer::new(&device, &queue));
 
         let size = window.inner_size();
         let caps = surface.get_capabilities(&adapter);
-        let format = caps.formats.iter().copied().find(|f| f.is_srgb()).unwrap_or(caps.formats[0]);
+        let format = caps
+            .formats
+            .iter()
+            .copied()
+            .find(|f| f.is_srgb())
+            .or_else(|| caps.formats.first().copied())
+            .ok_or(Error::NoSurfaceFormat)?;
         let mut usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
         if caps.usages.contains(wgpu::TextureUsages::COPY_SRC) {
             usage |= wgpu::TextureUsages::COPY_SRC;
@@ -659,10 +677,8 @@ impl Renderer {
                 push_constant_ranges: &[],
             })
         };
-        let empty_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("empty"),
-            entries: &[],
-        });
+        let empty_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("empty"), entries: &[] });
         let empty_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("empty"),
             layout: &empty_layout,
@@ -693,7 +709,8 @@ impl Renderer {
                 attributes: &chunk_attrs,
             },
         ];
-        let city_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Unorm8x4, 7 => Uint8x4];
+        let city_attrs =
+            wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Unorm8x4, 7 => Uint8x4];
         let city_buffers = [
             wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<CityVertex>() as u64,
@@ -770,11 +787,8 @@ impl Renderer {
                 cache: None,
             })
         };
-        let hdr_target = |blend| Some(wgpu::ColorTargetState {
-            format: HDR_FORMAT,
-            blend,
-            write_mask: wgpu::ColorWrites::ALL,
-        });
+        let hdr_target =
+            |blend| Some(wgpu::ColorTargetState { format: HDR_FORMAT, blend, write_mask: wgpu::ColorWrites::ALL });
 
         let terrain_pipeline = make(Desc {
             label: "terrain",
@@ -898,11 +912,7 @@ impl Renderer {
             fs: Some("fs"),
             buffers: &[],
             depth: None,
-            target: Some(wgpu::ColorTargetState {
-                format,
-                blend: None,
-                write_mask: wgpu::ColorWrites::ALL,
-            }),
+            target: Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL }),
         });
         let shadow_terrain_pipeline = make(Desc {
             label: "shadow terrain",
@@ -1084,9 +1094,8 @@ impl Renderer {
             })
         };
         let clouds_group = sampled(&clouds_view);
-        let bloom_down: Vec<_> = (0..levels as usize)
-            .map(|i| sampled(if i == 0 { &hdr_view } else { &bloom_views[i - 1] }))
-            .collect();
+        let bloom_down: Vec<_> =
+            (0..levels as usize).map(|i| sampled(if i == 0 { &hdr_view } else { &bloom_views[i - 1] })).collect();
         let bloom_up: Vec<_> = (0..levels as usize - 1).map(|i| sampled(&bloom_views[i + 1])).collect();
         let rays_group = sampled(&bloom_views[0]);
 
@@ -1133,6 +1142,8 @@ impl Renderer {
         }
     }
 
+    /// Adapte la surface et les cibles de rendu a la nouvelle taille de la fenetre, en pixels.
+    /// Une taille nulle (fenetre reduite) est ignoree.
     pub fn resize(&mut self, width: u32, height: u32) {
         if width == 0 || height == 0 {
             return;
@@ -1143,6 +1154,7 @@ impl Renderer {
         self.targets = Self::make_targets(&self.device, &self.config, &self.sized_layouts);
     }
 
+    /// Rapport largeur / hauteur de l'image.
     pub fn aspect(&self) -> f32 {
         self.config.width as f32 / self.config.height as f32
     }
@@ -1203,7 +1215,13 @@ impl Renderer {
 
     /// Prepare les instances d'objets de l'image, relatives a la camera. Les cellules visibles sont
     /// reparties entre plusieurs threads ; chaque thread remplit ses propres listes.
-    fn prepare_objects(&mut self, world: &Streamer, cam: DVec3, planes: &[Vec4; 5], cascades: &[Mat4; CASCADES]) -> (Vec<ObjectDraw>, usize) {
+    fn prepare_objects(
+        &mut self,
+        world: &Streamer,
+        cam: DVec3,
+        planes: &[Vec4; 5],
+        cascades: &[Mat4; CASCADES],
+    ) -> (Vec<ObjectDraw>, usize) {
         let (grass, flower, stalk) = (Kind::Grass as usize, Kind::Flower as usize, Kind::TallGrass as usize);
         let trees: Vec<&crate::world::scatter::CellObjects> = world
             .trees
@@ -1213,8 +1231,11 @@ impl Renderer {
                 offset.length() <= SHADOW_CELL_DISTANCE || sphere_in_frustum(planes, offset, CELL_CULL_RADIUS)
             })
             .collect();
-        let herbs: Vec<&crate::world::scatter::GrassCell> =
-            world.grass.values().filter(|cell| sphere_in_frustum(planes, (cell.center - cam).as_vec3(), CELL_CULL_RADIUS)).collect();
+        let herbs: Vec<&crate::world::scatter::GrassCell> = world
+            .grass
+            .values()
+            .filter(|cell| sphere_in_frustum(planes, (cell.center - cam).as_vec3(), CELL_CULL_RADIUS))
+            .collect();
         let tree_radius = world.config.tree_radius as f32;
         let grass_radius = world.config.grass_radius as f32;
 
@@ -1226,7 +1247,9 @@ impl Renderer {
             self.scratch_instances.resize_with(threads, Scratch::default);
         }
         let scratch = &mut self.scratch_instances[..threads];
-        let fill = |out: &mut Scratch, trees: &[&crate::world::scatter::CellObjects], herbs: &[&crate::world::scatter::GrassCell]| {
+        let fill = |out: &mut Scratch,
+                    trees: &[&crate::world::scatter::CellObjects],
+                    herbs: &[&crate::world::scatter::GrassCell]| {
             for per_kind in out.iter_mut() {
                 for list in per_kind {
                     list.clear();
@@ -1234,13 +1257,49 @@ impl Renderer {
             }
             for cell in trees {
                 for (kind, items) in cell.objects.iter().enumerate() {
-                    add_instances(&mut out[kind], items, cell.center, cam, tree_radius, 200.0, [NEAR_MESH_DISTANCE, FAR_MESH_DISTANCE], Some(cascades));
+                    add_instances(
+                        &mut out[kind],
+                        items,
+                        cell.center,
+                        cam,
+                        tree_radius,
+                        200.0,
+                        [NEAR_MESH_DISTANCE, FAR_MESH_DISTANCE],
+                        Some(cascades),
+                    );
                 }
             }
             for cell in herbs {
-                add_instances(&mut out[grass], &cell.tufts, cell.center, cam, grass_radius, 50.0, HERB_MESH_DISTANCES, None);
-                add_instances(&mut out[flower], &cell.flowers, cell.center, cam, grass_radius, 50.0, HERB_MESH_DISTANCES, None);
-                add_instances(&mut out[stalk], &cell.stalks, cell.center, cam, grass_radius, 50.0, HERB_MESH_DISTANCES, None);
+                add_instances(
+                    &mut out[grass],
+                    &cell.tufts,
+                    cell.center,
+                    cam,
+                    grass_radius,
+                    50.0,
+                    HERB_MESH_DISTANCES,
+                    None,
+                );
+                add_instances(
+                    &mut out[flower],
+                    &cell.flowers,
+                    cell.center,
+                    cam,
+                    grass_radius,
+                    50.0,
+                    HERB_MESH_DISTANCES,
+                    None,
+                );
+                add_instances(
+                    &mut out[stalk],
+                    &cell.stalks,
+                    cell.center,
+                    cam,
+                    grass_radius,
+                    50.0,
+                    HERB_MESH_DISTANCES,
+                    None,
+                );
             }
         };
         if threads == 1 {
@@ -1273,7 +1332,11 @@ impl Renderer {
                 for s in scratch.iter() {
                     let list = &s[kind][slot];
                     if !list.is_empty() {
-                        self.queue.write_buffer(&self.object_instances, count as u64 * size, bytemuck::cast_slice(list));
+                        self.queue.write_buffer(
+                            &self.object_instances,
+                            count as u64 * size,
+                            bytemuck::cast_slice(list),
+                        );
                         count += list.len();
                     }
                 }
@@ -1354,7 +1417,11 @@ impl Renderer {
             Some(v) if (v.position - cam).length() < 5000.0 => {
                 crate::vehicle::pose(&self.car_model, v, &mut self.car_scratch);
                 self.queue.write_buffer(&self.car_vertices, 0, bytemuck::cast_slice(&self.car_scratch));
-                instances.push(ChunkInstance { offset: (v.position - cam).as_vec3().to_array(), size: 1.0, wrap: wrap_vec(v.position) });
+                instances.push(ChunkInstance {
+                    offset: (v.position - cam).as_vec3().to_array(),
+                    size: 1.0,
+                    wrap: wrap_vec(v.position),
+                });
                 Some((instances.len() - 1) as u32)
             }
             _ => None,
@@ -1379,10 +1446,7 @@ impl Renderer {
                 color_attachments: &[],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.cascade_views[c],
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
                     stencil_ops: None,
                 }),
                 timestamp_writes: ts(0, c == 0, c + 1 == cascades.len()),
@@ -1449,10 +1513,7 @@ impl Renderer {
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.targets.depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(0.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
                     stencil_ops: None,
                 }),
                 timestamp_writes: ts(1, true, true),
@@ -1618,7 +1679,8 @@ impl Renderer {
         }
         let clear = wgpu::LoadOp::Clear(wgpu::Color::BLACK);
         for (i, source) in self.targets.bloom_down.iter().enumerate() {
-            let mut pass = fullscreen(&mut encoder, "bloom down", &self.targets.bloom_views[i], clear, ts(5, i == 0, false));
+            let mut pass =
+                fullscreen(&mut encoder, "bloom down", &self.targets.bloom_views[i], clear, ts(5, i == 0, false));
             pass.set_pipeline(if i == 0 { &self.bloom_first_pipeline } else { &self.bloom_down_pipeline });
             pass.set_bind_group(0, &self.globals_group, &[]);
             pass.set_bind_group(1, source, &[]);
@@ -1633,7 +1695,13 @@ impl Renderer {
             pass.draw(0..3, 0..1);
         }
         for (i, source) in self.targets.bloom_up.iter().enumerate().rev() {
-            let mut pass = fullscreen(&mut encoder, "bloom up", &self.targets.bloom_views[i], wgpu::LoadOp::Load, ts(5, false, i == 0));
+            let mut pass = fullscreen(
+                &mut encoder,
+                "bloom up",
+                &self.targets.bloom_views[i],
+                wgpu::LoadOp::Load,
+                ts(5, false, i == 0),
+            );
             pass.set_pipeline(&self.bloom_up_pipeline);
             pass.set_bind_group(0, &self.globals_group, &[]);
             pass.set_bind_group(1, source, &[]);
@@ -1701,8 +1769,9 @@ impl Renderer {
             self.device.poll(wgpu::Maintain::Poll);
         }
         if let Some((path, buffer)) = capture {
-            if let Err(e) = self.save_capture(&buffer, path) {
-                eprintln!("capture impossible : {e}");
+            match self.save_capture(&buffer, path) {
+                Ok(()) => println!("capture : {}", path.display()),
+                Err(e) => eprintln!("capture impossible : {e}"),
             }
         }
         frame.present();
@@ -1746,21 +1815,25 @@ impl Renderer {
         Some(buffer)
     }
 
-    fn save_capture(&self, buffer: &wgpu::Buffer, path: &Path) -> Result<(), String> {
+    /// Relit l'image copiee dans `buffer` et l'ecrit en PNG.
+    fn save_capture(&self, buffer: &wgpu::Buffer, path: &Path) -> crate::Result<()> {
         let slice = buffer.slice(..);
-        slice.map_async(wgpu::MapMode::Read, |_| {});
+        // Le resultat de la projection en memoire arrive pendant `poll` : sans lui, lire la plage
+        // d'un tampon dont la projection a echoue ferait paniquer.
+        let (sent, mapped) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sent.send(result);
+        });
         self.device.poll(wgpu::Maintain::Wait);
+        mapped.recv().unwrap_or(Err(wgpu::BufferAsyncError))?;
 
         let (w, h) = (self.config.width as usize, self.config.height as usize);
         let stride = (w * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
-        let bgra = matches!(
-            self.config.format,
-            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
-        );
+        let bgra = matches!(self.config.format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
         let mapped = slice.get_mapped_range();
         let mut rgba = Vec::with_capacity(w * h * 4);
         for row in mapped.chunks(stride).take(h) {
-            for px in row[..w * 4].chunks_exact(4) {
+            for px in row[..w * 4].as_chunks::<4>().0 {
                 if bgra {
                     rgba.extend_from_slice(&[px[2], px[1], px[0], 255]);
                 } else {
@@ -1771,12 +1844,7 @@ impl Renderer {
         drop(mapped);
         buffer.unmap();
 
-        let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
-        let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), w as u32, h as u32);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder.write_header().map_err(|e| e.to_string())?;
-        writer.write_image_data(&rgba).map_err(|e| e.to_string())
+        crate::write_png(path, self.config.width, self.config.height, png::ColorType::Rgba, &rgba)
     }
 }
 

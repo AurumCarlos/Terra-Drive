@@ -1,11 +1,11 @@
-﻿//! Outil de verification : ce qu'on voit depuis des lieux tires au hasard, sans lancer le jeu.
+//! Outil de verification : ce qu'on voit depuis des lieux tires au hasard, sans lancer le jeu.
 //! Chaque vignette est une vue a hauteur d'homme volant, calculee directement depuis la fonction de
 //! planete. Affiche aussi la part de lieux ternes, et le temps de calcul d'un point.
 //! audit GRAINE sortie.png [COLONNES] [LIGNES] [ALTITUDE]
 
 use glam::{DVec3, Vec3};
 use std::time::Instant;
-use terra::world::generator::{dir_to_lat_lon, Detail, Generator, PlanetParams, planet_radius};
+use terra::world::generator::{dir_to_lat_lon, planet_radius, Detail, Generator, PlanetParams};
 use terra::world::noise::{hash_seed, Rng};
 
 const TILE_W: usize = 320;
@@ -122,7 +122,10 @@ fn stats(gen: &Generator, seed: u64) {
             for k in 0..24 {
                 let a = k as f64 / 24.0 * std::f64::consts::TAU;
                 let r = radius * (0.35 + 0.65 * ((k % 3) as f64 / 2.0));
-                let s = gen.surface_detail((dir + (side * a.cos() + other * a.sin()) * (r / planet_radius())).normalize(), &detail);
+                let s = gen.surface_detail(
+                    (dir + (side * a.cos() + other * a.sin()) * (r / planet_radius())).normalize(),
+                    &detail,
+                );
                 lo = lo.min(s.height);
                 hi = hi.max(s.height);
                 water |= s.height < s.water_level;
@@ -140,12 +143,22 @@ fn stats(gen: &Generator, seed: u64) {
     relief_2.sort_by(f32::total_cmp);
     relief_10.sort_by(f32::total_cmp);
     let pct = |v: &[f32], p: usize| v[v.len() * p / 100];
-    println!("relief 2 km  : p10 {:.0} m, p50 {:.0} m, p90 {:.0} m", pct(&relief_2, 10), pct(&relief_2, 50), pct(&relief_2, 90));
-    println!("relief 10 km : p10 {:.0} m, p50 {:.0} m, p90 {:.0} m", pct(&relief_10, 10), pct(&relief_10, 50), pct(&relief_10, 90));
+    println!(
+        "relief 2 km  : p10 {:.0} m, p50 {:.0} m, p90 {:.0} m",
+        pct(&relief_2, 10),
+        pct(&relief_2, 50),
+        pct(&relief_2, 90)
+    );
+    println!(
+        "relief 10 km : p10 {:.0} m, p50 {:.0} m, p90 {:.0} m",
+        pct(&relief_10, 10),
+        pct(&relief_10, 50),
+        pct(&relief_10, 90)
+    );
     println!("lieux ternes : {:.1} %", dull as f32 * 100.0 / count as f32);
 }
 
-fn main() {
+fn main() -> terra::Result<()> {
     let mut args = std::env::args().skip(1);
     let seed: u64 = args.next().and_then(|s| s.parse().ok()).unwrap_or(1);
     let path = args.next().unwrap_or_else(|| "audit.png".to_string());
@@ -191,7 +204,17 @@ fn main() {
         let c = gen.climate(*dir, s.height);
         println!(
             "{:>2} (l{} c{}) {:7.2},{:8.2} cap {:3.0} {:6.0} m t{:.2} h{:.2} {:?} {}",
-            i, i / columns, i % columns, lat, lon, yaw.to_degrees(), s.height, c.temperature, c.moisture, gen.biome(c), gen.landform_name(*dir)
+            i,
+            i / columns,
+            i % columns,
+            lat,
+            lon,
+            yaw.to_degrees(),
+            s.height,
+            c.temperature,
+            c.moisture,
+            gen.biome(c),
+            gen.landform_name(*dir)
         );
     }
 
@@ -207,7 +230,7 @@ fn main() {
                 if i >= places.len() {
                     break;
                 }
-                let mut tile = slots[i].lock().unwrap();
+                let mut tile = terra::sync::lock(&slots[i]);
                 view(&gen, places[i].0, places[i].1, altitude, &mut tile);
             });
         }
@@ -229,10 +252,7 @@ fn main() {
             }
         }
     }
-    let file = std::fs::File::create(&path).expect("ecriture de l'image");
-    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), w as u32, h as u32);
-    encoder.set_color(png::ColorType::Rgb);
-    encoder.set_depth(png::BitDepth::Eight);
-    encoder.write_header().unwrap().write_image_data(&image).unwrap();
+    terra::write_png(std::path::Path::new(&path), w as u32, h as u32, png::ColorType::Rgb, &image)?;
     println!("vues : {path}");
+    Ok(())
 }

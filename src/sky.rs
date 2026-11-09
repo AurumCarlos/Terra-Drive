@@ -25,6 +25,7 @@ fn longitude(up: DVec3) -> f32 {
 }
 
 impl Sky {
+    /// Fait passer `dt` secondes : le soleil ne tourne que si `day_length` n'est pas nul.
     pub fn advance(&mut self, dt: f32) {
         self.elapsed += dt;
         if self.day_length > 0.0 {
@@ -49,6 +50,7 @@ impl Sky {
         (0.5 + (longitude(up) - self.sun_longitude) / std::f32::consts::TAU).rem_euclid(1.0)
     }
 
+    /// Place le soleil pour qu'il soit `time` (0 a 1, 0,5 = midi) au lieu de verticale `up`.
     pub fn set_local_time(&mut self, up: DVec3, time: f32) {
         self.sun_longitude = (longitude(up) - (time - 0.5) * std::f32::consts::TAU).rem_euclid(std::f32::consts::TAU);
     }

@@ -7,11 +7,11 @@
 
 use super::circuit_data::CIRCUITS;
 use super::city::City;
+use super::fast_hash::FastMap;
 use super::generator::{planet_radius, smoothstep, Detail, Generator, Surface};
 use super::highway::Highways;
 use super::noise::hash_seed;
 use glam::{DVec2, DVec3};
-use super::fast_hash::FastMap;
 use std::sync::OnceLock;
 
 /// Demi-largeur de la piste (14 m) et de la route d'acces.
@@ -40,16 +40,24 @@ impl Path {
     fn new(points: Vec<DVec3>, closed: bool, half: f64) -> Self {
         let r = planet_radius();
         let mut s = vec![0.0];
+        let mut along = 0.0;
         for w in points.windows(2) {
-            s.push(s.last().unwrap() + (w[1] - w[0]).length() * r);
+            along += (w[1] - w[0]).length() * r;
+            s.push(along);
         }
         Self { points, closed, half, s }
     }
 
+    /// Nombre de segments : autant que de points pour une boucle, un de moins sinon.
     pub fn segments(&self) -> usize {
-        if self.closed { self.points.len() } else { self.points.len() - 1 }
+        if self.closed {
+            self.points.len()
+        } else {
+            self.points.len() - 1
+        }
     }
 
+    /// Indice du point qui suit `k`, en bouclant sur le premier.
     pub fn next(&self, k: usize) -> usize {
         (k + 1) % self.points.len()
     }
@@ -67,8 +75,20 @@ impl Path {
     /// Tangente au point k, moyenne des deux segments voisins.
     pub fn tangent(&self, k: usize) -> DVec3 {
         let n = self.points.len();
-        let prev = if k > 0 { k - 1 } else if self.closed { n - 1 } else { 0 };
-        let next = if k + 1 < n { k + 1 } else if self.closed { 0 } else { n - 1 };
+        let prev = if k > 0 {
+            k - 1
+        } else if self.closed {
+            n - 1
+        } else {
+            0
+        };
+        let next = if k + 1 < n {
+            k + 1
+        } else if self.closed {
+            0
+        } else {
+            n - 1
+        };
         let d = self.points[next] - self.points[prev];
         let up = self.points[k];
         (d - up * d.dot(up)).normalize_or(up.any_orthonormal_vector())
@@ -105,10 +125,12 @@ pub struct Circuit {
 }
 
 impl Circuit {
+    /// Nom du circuit reel dont le trace est repris.
     pub fn name(&self) -> &'static str {
         CIRCUITS[self.shape].name
     }
 
+    /// Ville du circuit reel.
     pub fn location(&self) -> &'static str {
         CIRCUITS[self.shape].location
     }
@@ -118,6 +140,8 @@ impl Circuit {
         self.levels(gen)[p][k]
     }
 
+    /// Altitude de la chaussee en chaque point de chaque trace : le terrain naturel, lisse le long de
+    /// la piste. Calcule a la premiere demande, puis garde.
     pub fn levels(&self, gen: &Generator) -> &Vec<Vec<f64>> {
         self.levels.get_or_init(|| {
             let detail = Detail::for_spacing(8.0);
@@ -233,9 +257,12 @@ pub struct Hit {
     pub side: f64,
 }
 
+/// Morceaux de piste par maille de la sphere : (circuit, trace, segment).
+type TrackIndex = FastMap<(u8, i32, i32), Vec<(u32, u8, u32)>>;
+
 pub struct Circuits {
     pub list: Vec<Circuit>,
-    index: FastMap<(u8, i32, i32), Vec<(u32, u8, u32)>>,
+    index: TrackIndex,
 }
 
 fn key(dir: DVec3) -> (u8, i32, i32) {
@@ -276,6 +303,7 @@ struct Candidate {
 }
 
 impl Circuits {
+    /// Aucun circuit : pour une planete sans villes, ou pendant sa construction.
     pub fn empty() -> Self {
         Self { list: Vec::new(), index: FastMap::default() }
     }
@@ -301,7 +329,7 @@ impl Circuits {
                 })
                 .collect();
             for c in chunks {
-                for (i, list) in c.join().unwrap() {
+                for (i, list) in crate::sync::join(c) {
                     found[i] = list;
                 }
             }
@@ -310,7 +338,10 @@ impl Circuits {
         // Les villes choisissent tour a tour, sans que deux circuits se touchent.
         let mut list: Vec<Circuit> = Vec::new();
         for (i, options) in found.into_iter().enumerate() {
-            let Some(c) = options.into_iter().find(|c| list.iter().all(|o| (o.center - c.center).length() * r > o.radius + c.radius + 400.0)) else {
+            let Some(c) = options
+                .into_iter()
+                .find(|c| list.iter().all(|o| (o.center - c.center).length() * r > o.radius + c.radius + 400.0))
+            else {
                 continue;
             };
             let city = &cities[i];
@@ -318,7 +349,11 @@ impl Circuits {
             let from = city.dir_of(DVec2::from_angle(c.angle) * (city.reach(c.angle) - 6.0));
             let (j, _) = c.track.iter().enumerate().fold((0, f64::MAX), |b, (k, p)| {
                 let d = (*p - from).length();
-                if d < b.1 { (k, d) } else { b }
+                if d < b.1 {
+                    (k, d)
+                } else {
+                    b
+                }
             });
             let to = c.track[j];
             let len = (to - from).length() * r;
@@ -328,7 +363,8 @@ impl Circuits {
             let clear = access.iter().enumerate().all(|(k, d)| {
                 let s = gen.surface_natural(*d, &detail);
                 let near_end = k + 3 >= access.len() || k < 3;
-                (near_end || s.height > s.water_level + 1.0) && highways.clearance(*d).is_none_or(|c| c > ACCESS_HALF + 6.0)
+                (near_end || s.height > s.water_level + 1.0)
+                    && highways.clearance(*d).is_none_or(|c| c > ACCESS_HALF + 6.0)
             });
             let mut paths = vec![Path::new(c.track.clone(), true, TRACK_HALF)];
             let mut junction = None;
@@ -338,10 +374,18 @@ impl Circuits {
                 junction = Some(j);
                 cities[i].exits.push(c.angle);
             }
-            list.push(Circuit { shape: c.shape, city: i, center: c.center, radius: c.radius, paths, junction, levels: OnceLock::new() });
+            list.push(Circuit {
+                shape: c.shape,
+                city: i,
+                center: c.center,
+                radius: c.radius,
+                paths,
+                junction,
+                levels: OnceLock::new(),
+            });
         }
 
-        let mut index: FastMap<(u8, i32, i32), Vec<(u32, u8, u32)>> = FastMap::default();
+        let mut index = TrackIndex::default();
         for (ci, c) in list.iter().enumerate() {
             for (pi, p) in c.paths.iter().enumerate() {
                 for k in 0..p.segments() {
@@ -391,7 +435,8 @@ impl Circuits {
                     }
                     let (east, north) = tangent_frame(center);
                     for rot in 0..4 {
-                        let turn = rot as f64 * std::f64::consts::FRAC_PI_2 + (hash_seed(seed, i as i64, rot) % 1000) as f64 * 0.0006;
+                        let turn = rot as f64 * std::f64::consts::FRAC_PI_2
+                            + (hash_seed(seed, i as i64, rot) % 1000) as f64 * 0.0006;
                         let (sn, cs) = turn.sin_cos();
                         let track: Vec<DVec3> = pts
                             .iter()
@@ -400,7 +445,11 @@ impl Circuits {
                                 (center * r + east * x + north * y).normalize()
                             })
                             .collect();
-                        if track.iter().step_by(4).any(|d| highways.clearance(*d).is_some_and(|c| c < TRACK_HALF + RUNOFF + 15.0)) {
+                        if track
+                            .iter()
+                            .step_by(4)
+                            .any(|d| highways.clearance(*d).is_some_and(|c| c < TRACK_HALF + RUNOFF + 15.0))
+                        {
                             continue;
                         }
                         // Terre seche, et le moins de denivele possible.
@@ -425,7 +474,7 @@ impl Circuits {
                         }
                         let cost = hi - lo + gap * 0.01 + attempt as f64 * 40.0;
                         best.push(Candidate { city: i, shape, angle, center, radius, track, cost });
-                        best.sort_by(|a, b| a.cost.partial_cmp(&b.cost).unwrap());
+                        best.sort_by(|a, b| a.cost.total_cmp(&b.cost));
                         best.truncate(3);
                     }
                 }
@@ -507,6 +556,7 @@ impl Circuits {
         best
     }
 
+    /// Vrai sur la chaussee, ou a moins de 30 cm de son bord.
     pub fn on_track(&self, dir: DVec3) -> bool {
         self.clearance(dir).is_some_and(|d| d < 0.3)
     }
@@ -544,7 +594,7 @@ impl Circuits {
 
     /// Le circuit le plus proche d'un point.
     pub fn nearest(&self, dir: DVec3) -> Option<&Circuit> {
-        self.list.iter().max_by(|a, b| a.center.dot(dir).partial_cmp(&b.center.dot(dir)).unwrap())
+        self.list.iter().max_by(|a, b| a.center.dot(dir).total_cmp(&b.center.dot(dir)))
     }
 
     /// Morceaux de trace dans la maille d'un point : (circuit, trace, segment).

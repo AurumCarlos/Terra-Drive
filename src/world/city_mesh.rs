@@ -11,7 +11,7 @@
 
 use super::chunk::{NodeId, GRID};
 use super::city::{Building, City, Fence, Kind, Road};
-use super::generator::{Detail, Generator, planet_radius};
+use super::generator::{planet_radius, Detail, Generator};
 use super::highway::{Highway, Highways, Profile, POINT_STEP};
 use super::noise::{hash_seed, Rng};
 use bytemuck::{Pod, Zeroable};
@@ -142,7 +142,15 @@ const PLASTER: [[f32; 3]; 15] = [
 ];
 const STONE: [[f32; 3]; 3] = [[0.55, 0.5, 0.4], [0.5, 0.47, 0.4], [0.58, 0.53, 0.44]];
 const BRICK: [[f32; 3]; 3] = [[0.26, 0.11, 0.07], [0.3, 0.15, 0.09], [0.22, 0.11, 0.08]];
-const TILE: [[f32; 3]; 7] = [[0.33, 0.14, 0.07], [0.3, 0.1, 0.05], [0.25, 0.08, 0.04], [0.16, 0.09, 0.06], [0.06, 0.06, 0.07], [0.09, 0.1, 0.12], [0.14, 0.15, 0.16]];
+const TILE: [[f32; 3]; 7] = [
+    [0.33, 0.14, 0.07],
+    [0.3, 0.1, 0.05],
+    [0.25, 0.08, 0.04],
+    [0.16, 0.09, 0.06],
+    [0.06, 0.06, 0.07],
+    [0.09, 0.1, 0.12],
+    [0.14, 0.15, 0.16],
+];
 const MODERN: [[f32; 3]; 6] = [
     [0.62, 0.61, 0.58],
     [0.45, 0.45, 0.44],
@@ -151,8 +159,10 @@ const MODERN: [[f32; 3]; 6] = [
     [0.38, 0.17, 0.1],
     [0.58, 0.55, 0.46],
 ];
-const GLASS_TINT: [[f32; 3]; 5] = [[0.05, 0.09, 0.12], [0.04, 0.07, 0.07], [0.1, 0.08, 0.06], [0.07, 0.075, 0.09], [0.03, 0.06, 0.11]];
-const METALS: [[f32; 3]; 5] = [[0.5, 0.5, 0.48], [0.22, 0.3, 0.4], [0.45, 0.4, 0.3], [0.25, 0.33, 0.25], [0.55, 0.53, 0.5]];
+const GLASS_TINT: [[f32; 3]; 5] =
+    [[0.05, 0.09, 0.12], [0.04, 0.07, 0.07], [0.1, 0.08, 0.06], [0.07, 0.075, 0.09], [0.03, 0.06, 0.11]];
+const METALS: [[f32; 3]; 5] =
+    [[0.5, 0.5, 0.48], [0.22, 0.3, 0.4], [0.45, 0.4, 0.3], [0.25, 0.33, 0.25], [0.55, 0.53, 0.5]];
 const CARS: [[f32; 3]; 9] = [
     [0.6, 0.6, 0.6],
     [0.02, 0.02, 0.02],
@@ -214,7 +224,14 @@ struct Out {
 
 impl Out {
     fn new(origin: DVec3) -> Self {
-        Self { v: Vec::new(), i: Vec::new(), origin, min: DVec3::splat(f64::MAX), max: DVec3::splat(f64::MIN), top: 0.0 }
+        Self {
+            v: Vec::new(),
+            i: Vec::new(),
+            origin,
+            min: DVec3::splat(f64::MAX),
+            max: DVec3::splat(f64::MIN),
+            top: 0.0,
+        }
     }
 
     fn vert(&mut self, p: DVec3, n: DVec3, uv: [f64; 2], pt: Paint) -> u32 {
@@ -447,7 +464,18 @@ impl Ctx<'_> {
 
     /// Cylindre ou tronc de cone, aux normales lissees.
     #[allow(clippy::too_many_arguments)]
-    fn cylinder(&mut self, c: DVec2, r0: f64, r1: f64, z0: f64, z1: f64, segs: usize, side: Paint, top: Option<Paint>, inward: bool) {
+    fn cylinder(
+        &mut self,
+        c: DVec2,
+        r0: f64,
+        r1: f64,
+        z0: f64,
+        z1: f64,
+        segs: usize,
+        side: Paint,
+        top: Option<Paint>,
+        inward: bool,
+    ) {
         let f = self.f;
         let ring = |r: f64, k: usize| {
             let a = k as f64 / segs as f64 * std::f64::consts::TAU;
@@ -459,7 +487,11 @@ impl Ctx<'_> {
             let n = |i: usize| {
                 let d = DVec2::from_angle(i as f64 / segs as f64 * std::f64::consts::TAU);
                 let v = f.dirv(d, slope);
-                if inward { -v } else { v }
+                if inward {
+                    -v
+                } else {
+                    v
+                }
             };
             let arc = |i: usize| i as f64 / segs as f64 * std::f64::consts::TAU * r0.max(r1);
             self.o.quad_smooth(
@@ -561,7 +593,11 @@ impl Ctx<'_> {
         let r = [a, b, b - out * depth, a - out * depth];
         self.walls(&r, z - 1.2, z + h, wall);
         let (g0, g1) = (a + d * 0.22 + out * 0.03, b - d * 0.22 + out * 0.03);
-        self.face(&[(g0, z + 0.2), (g1, z + 0.2), (g1, z + h - 0.15), (g0, z + h - 0.15)], self.f.dirv(out, 0.0), with([0.03, 0.035, 0.04], mat::GLASS));
+        self.face(
+            &[(g0, z + 0.2), (g1, z + 0.2), (g1, z + h - 0.15), (g0, z + h - 0.15)],
+            self.f.dirv(out, 0.0),
+            with([0.03, 0.035, 0.04], mat::GLASS),
+        );
         let rr = [b + out * 0.12, b - out * depth, a - out * depth, a + out * 0.12];
         self.gable(&rr, z + h, 0.95, 0.12, roof, wall, false);
     }
@@ -627,14 +663,24 @@ impl Ctx<'_> {
                     let m = f[0].lerp(f[1], self.rng.range(0.3, 0.7) as f64);
                     let door = [0.12, 0.07, 0.04];
                     self.face(
-                        &[(m - ax * 0.5 + out0 * 0.03, 0.5), (m + ax * 0.5 + out0 * 0.03, 0.5), (m + ax * 0.5 + out0 * 0.03, 2.65), (m - ax * 0.5 + out0 * 0.03, 2.65)],
+                        &[
+                            (m - ax * 0.5 + out0 * 0.03, 0.5),
+                            (m + ax * 0.5 + out0 * 0.03, 0.5),
+                            (m + ax * 0.5 + out0 * 0.03, 2.65),
+                            (m - ax * 0.5 + out0 * 0.03, 2.65),
+                        ],
                         self.f.dirv(out0, 0.0),
                         plain(door),
                     );
                     self.cube(m + out0 * 0.45, ax, 0.85, 0.45, -0.5, 0.45, plain([0.35, 0.34, 0.32]));
                     // Auvent au-dessus de la porte.
                     self.face(
-                        &[(m - ax * 0.9, 2.95), (m + ax * 0.9, 2.95), (m + ax * 0.9 + out0 * 1.1, 2.6), (m - ax * 0.9 + out0 * 1.1, 2.6)],
+                        &[
+                            (m - ax * 0.9, 2.95),
+                            (m + ax * 0.9, 2.95),
+                            (m + ax * 0.9 + out0 * 1.1, 2.6),
+                            (m - ax * 0.9 + out0 * 1.1, 2.6),
+                        ],
                         self.f.up,
                         roof,
                     );
@@ -645,7 +691,11 @@ impl Ctx<'_> {
                 self.prism(&f, -1.0, 2.8, plain(wall), Some(with([0.2, 0.2, 0.2], mat::ROOF)));
                 if full {
                     let m = f[0].lerp(f[1], 0.5) + out0 * 0.02;
-                    self.face(&[(m - ax * 1.2, 0.0), (m + ax * 1.2, 0.0), (m + ax * 1.2, 2.2), (m - ax * 1.2, 2.2)], self.f.dirv(out0, 0.0), with([0.6, 0.6, 0.58], mat::METAL));
+                    self.face(
+                        &[(m - ax * 1.2, 0.0), (m + ax * 1.2, 0.0), (m + ax * 1.2, 2.2), (m - ax * 1.2, 2.2)],
+                        self.f.dirv(out0, 0.0),
+                        with([0.6, 0.6, 0.58], mat::METAL),
+                    );
                 }
             }
             Kind::Pool => {
@@ -673,7 +723,17 @@ impl Ctx<'_> {
                 self.cylinder(c, r, 0.5, h, h + r * 0.25, segs, metal, Some(metal), false);
                 if full {
                     // Rambarde du toit et escalier en colimacon figure par un poteau.
-                    self.cylinder(c, r + 0.05, r + 0.05, h, h + 1.0, segs, with_param([0.1, 0.1, 0.1], mat::RAILING, 0), None, false);
+                    self.cylinder(
+                        c,
+                        r + 0.05,
+                        r + 0.05,
+                        h,
+                        h + 1.0,
+                        segs,
+                        with_param([0.1, 0.1, 0.1], mat::RAILING, 0),
+                        None,
+                        false,
+                    );
                 }
             }
             Kind::Chimney => {
@@ -681,7 +741,17 @@ impl Ctx<'_> {
                 let segs = if low { 8 } else { 14 };
                 let brick = plain(self.pick(&BRICK));
                 self.cylinder(c, 2.1, 1.3, -1.0, 52.0, segs, brick, None, false);
-                self.cylinder(c, 1.36, 1.3, 47.5, 52.0, segs, plain([0.04, 0.035, 0.03]), Some(plain([0.01, 0.01, 0.01])), false);
+                self.cylinder(
+                    c,
+                    1.36,
+                    1.3,
+                    47.5,
+                    52.0,
+                    segs,
+                    plain([0.04, 0.035, 0.03]),
+                    Some(plain([0.01, 0.01, 0.01])),
+                    false,
+                );
                 if !low {
                     self.beacon(c + DVec2::X * 1.3, 52.0);
                 }
@@ -715,7 +785,9 @@ impl Ctx<'_> {
                 self.cylinder(c, r, r, -0.5, 0.6, 28, stone, None, false);
                 self.cylinder(c, r - 0.35, r - 0.35, 0.0, 0.6, 28, stone, None, true);
                 self.annulus(c, r - 0.35, r, 0.6, 28, stone);
-                let disc: Vec<DVec2> = (0..28).map(|k| c + DVec2::from_angle(k as f64 / 28.0 * std::f64::consts::TAU) * (r - 0.35)).collect();
+                let disc: Vec<DVec2> = (0..28)
+                    .map(|k| c + DVec2::from_angle(k as f64 / 28.0 * std::f64::consts::TAU) * (r - 0.35))
+                    .collect();
                 self.cap(&disc, 0.42, water);
                 self.cylinder(c, 0.5, 0.35, 0.0, 2.2, 12, stone, None, false);
                 self.cylinder(c, 0.45, 1.7, 2.0, 2.45, 18, stone, Some(water), false);
@@ -762,9 +834,17 @@ impl Ctx<'_> {
         if shop {
             let ax = (f[1] - f[0]).normalize_or_zero();
             let (a, c) = (f[0] + ax * 0.35, f[1] - ax * 0.35);
-            let awning = with_param(self.pick(&[[0.4, 0.03, 0.02], [0.03, 0.18, 0.08], [0.04, 0.06, 0.2], [0.35, 0.25, 0.03]]), mat::AWNING, 0);
+            let awning = with_param(
+                self.pick(&[[0.4, 0.03, 0.02], [0.03, 0.18, 0.08], [0.04, 0.06, 0.2], [0.35, 0.25, 0.03]]),
+                mat::AWNING,
+                0,
+            );
             self.face(&[(a, 3.35), (c, 3.35), (c + out * 1.3, 2.75), (a + out * 1.3, 2.75)], self.f.up, awning);
-            self.face(&[(a + out * 1.3, 2.75), (c + out * 1.3, 2.75), (c + out * 1.3, 2.5), (a + out * 1.3, 2.5)], self.f.dirv(out, 0.0), awning);
+            self.face(
+                &[(a + out * 1.3, 2.75), (c + out * 1.3, 2.75), (c + out * 1.3, 2.5), (a + out * 1.3, 2.5)],
+                self.f.dirv(out, 0.0),
+                awning,
+            );
         }
     }
 
@@ -860,7 +940,11 @@ impl Ctx<'_> {
             let len = (f[1] - f[0]).length();
             let bays = (len / 3.0).round().max(1.0) as usize;
             let glass = self.rng.f32() < 0.4;
-            let rail = if glass { with_param([0.05, 0.07, 0.08], mat::RAILING, 2) } else { with_param([0.04, 0.04, 0.045], mat::RAILING, 0) };
+            let rail = if glass {
+                with_param([0.05, 0.07, 0.08], mat::RAILING, 2)
+            } else {
+                with_param([0.04, 0.04, 0.045], mat::RAILING, 0)
+            };
             let slab = plain([0.5, 0.49, 0.47]);
             for fl in 1..floors as usize {
                 let z = 0.3 + fl as f64 * fh;
@@ -889,7 +973,8 @@ impl Ctx<'_> {
         let floors = b.floors as f64;
         let top = 0.4 + floors * fh;
         let curtain = self.rng.f32() < 0.5;
-        let (color, style) = if curtain { (self.pick(&GLASS_TINT), win::CURTAIN) } else { (self.pick(&MODERN), win::RIBBON) };
+        let (color, style) =
+            if curtain { (self.pick(&GLASS_TINT), win::CURTAIN) } else { (self.pick(&MODERN), win::RIBBON) };
         let split = if floors > 12.0 && self.rng.f32() < 0.6 { (floors * 0.6).round() } else { floors };
         let z1 = 0.4 + split * fh;
         let front = facade(color, style | win::SHOP, fh, b.seed);
@@ -948,7 +1033,17 @@ impl Ctx<'_> {
                 let apex = top + small * 1.1;
                 self.pyramid(&poly, top, c, apex, with([0.1, 0.2, 0.16], mat::PAINT));
                 if !low {
-                    self.cylinder(c, 0.7, 0.06, apex - 3.0, apex + 24.0, 6, with([0.5, 0.5, 0.5], mat::METAL), None, false);
+                    self.cylinder(
+                        c,
+                        0.7,
+                        0.06,
+                        apex - 3.0,
+                        apex + 24.0,
+                        6,
+                        with([0.5, 0.5, 0.5], mat::METAL),
+                        None,
+                        false,
+                    );
                     self.beacon(c, apex + 24.0);
                 }
             }
@@ -1034,8 +1129,16 @@ impl Ctx<'_> {
             for k in 0..n {
                 let (x0, x1) = (k as f64 * lx / n as f64, (k + 1) as f64 * lx / n as f64);
                 let p = |x: f64, y: f64| r[0] + ax * x + ay * y;
-                self.face(&[(p(x0, 0.0), h), (p(x0, ly), h), (p(x0, ly), h + 3.0), (p(x0, 0.0), h + 3.0)], self.f.dirv(-ax, 0.0), glass);
-                self.face(&[(p(x0, 0.0), h + 3.0), (p(x0, ly), h + 3.0), (p(x1, ly), h), (p(x1, 0.0), h)], self.f.up, roof_metal);
+                self.face(
+                    &[(p(x0, 0.0), h), (p(x0, ly), h), (p(x0, ly), h + 3.0), (p(x0, 0.0), h + 3.0)],
+                    self.f.dirv(-ax, 0.0),
+                    glass,
+                );
+                self.face(
+                    &[(p(x0, 0.0), h + 3.0), (p(x0, ly), h + 3.0), (p(x1, ly), h), (p(x1, 0.0), h)],
+                    self.f.up,
+                    roof_metal,
+                );
                 self.face(&[(p(x0, 0.0), h), (p(x1, 0.0), h), (p(x0, 0.0), h + 3.0)], self.f.dirv(-ay, 0.0), side);
                 self.face(&[(p(x0, ly), h), (p(x1, ly), h), (p(x0, ly), h + 3.0)], self.f.dirv(ay, 0.0), side);
             }
@@ -1049,7 +1152,11 @@ impl Ctx<'_> {
             let docks = ((len / 11.0).floor() as usize).min(6);
             for k in 0..docks {
                 let m = f[0].lerp(f[1], (k as f64 + 0.5) / docks as f64) + out * 0.03;
-                self.face(&[(m - ex * 1.8, 0.0), (m + ex * 1.8, 0.0), (m + ex * 1.8, 4.3), (m - ex * 1.8, 4.3)], self.f.dirv(out, 0.0), with([0.15, 0.15, 0.16], mat::METAL));
+                self.face(
+                    &[(m - ex * 1.8, 0.0), (m + ex * 1.8, 0.0), (m + ex * 1.8, 4.3), (m - ex * 1.8, 4.3)],
+                    self.f.dirv(out, 0.0),
+                    with([0.15, 0.15, 0.16], mat::METAL),
+                );
                 self.cube(m + out * 0.7, ex, 2.2, 0.7, 4.6, 4.8, plain([0.2, 0.2, 0.2]));
             }
         }
@@ -1071,7 +1178,12 @@ impl Ctx<'_> {
         self.gable(&nave, 13.0, 1.1, 0.4, slate, stone, false);
         // Abside en demi-octogone.
         let ac = p(lx - ar, ly * 0.5);
-        let mut apse: Vec<DVec2> = (0..=4).map(|k| ac + DVec2::from_angle(-std::f64::consts::FRAC_PI_2 + k as f64 / 4.0 * std::f64::consts::PI).rotate(ax) * ar).collect();
+        let mut apse: Vec<DVec2> = (0..=4)
+            .map(|k| {
+                ac + DVec2::from_angle(-std::f64::consts::FRAC_PI_2 + k as f64 / 4.0 * std::f64::consts::PI).rotate(ax)
+                    * ar
+            })
+            .collect();
         apse.push(ac);
         let ring: Vec<DVec2> = apse[..5].to_vec();
         for i in 0..4 {
@@ -1181,12 +1293,12 @@ pub fn deck_profile(city: &City, gen: &Generator, r: &Road) -> Vec<f32> {
 
 /// Le profil des ponts d'une rue, calcule une fois puis garde avec le plan.
 pub fn road_deck(plan: &super::city::Plan, city: &City, gen: &Generator, ri: u32) -> Arc<Vec<f32>> {
-    let cached = plan.decks.lock().unwrap().get(&ri).cloned();
+    let cached = crate::sync::lock(&plan.decks).get(&ri).cloned();
     match cached {
         Some(d) => d,
         None => {
             let d = Arc::new(deck_profile(city, gen, &plan.roads[ri as usize]));
-            plan.decks.lock().unwrap().insert(ri, d.clone());
+            crate::sync::lock(&plan.decks).insert(ri, d.clone());
             d
         }
     }
@@ -1251,7 +1363,13 @@ impl RoadCtx<'_, '_> {
         }
         breaks.retain(|b| *b > 0.0 && *b < len);
         let walk_at = |s: f64, side: f64| r.walk > 0.0 && s >= w0 && s <= w1 && !r.in_gap_side(s as f32, side as f32);
-        let lanes = if cw >= 9.0 { 2 } else if cw >= 4.5 { 1 } else { 0 };
+        let lanes = if cw >= 9.0 {
+            2
+        } else if cw >= 4.5 {
+            1
+        } else {
+            0
+        };
         let asphalt = enc([0.045, 0.045, 0.05]);
         let city = self.city;
         let up_at = |s: f64| city.dir_of(r.a + d * s);
@@ -1265,7 +1383,7 @@ impl RoadCtx<'_, '_> {
             let mut cuts = vec![s0];
             cuts.extend(breaks.iter().copied().filter(|b| *b > s0 + 0.01 && *b < s1 - 0.01));
             cuts.push(s1);
-            cuts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            cuts.sort_by(|a, b| a.total_cmp(b));
             for w in cuts.windows(2) {
                 let (sa, sb) = (w[0], w[1]);
                 let m = (sa + sb) * 0.5;
@@ -1276,12 +1394,17 @@ impl RoadCtx<'_, '_> {
                 }
                 let (ha, hb) = (self.ground(r.a + d * sa) + la, self.ground(r.a + d * sb) + lb);
                 let origin = self.o.origin;
-                let p = |s: f64, h: f64, x: f64, z: f64| city.dir_of(r.a + d * s + nrm * x) * (planet_radius() + h + z) - origin;
+                let p = |s: f64, h: f64, x: f64, z: f64| {
+                    city.dir_of(r.a + d * s + nrm * x) * (planet_radius() + h + z) - origin
+                };
                 let up = up_at(m);
                 let carriage = m >= t0 && m <= t1;
                 if carriage {
                     let style = if r.in_gap(m as f32) { 0 } else { lanes };
-                    let pt = Paint { color: asphalt, mat: [mat::ROAD, style, (cw * 4.0).min(255.0) as u8, (ri % 251) as u8] };
+                    let pt = Paint {
+                        color: asphalt,
+                        mat: [mat::ROAD, style, (cw * 4.0).min(255.0) as u8, (ri % 251) as u8],
+                    };
                     let z = 0.08;
                     self.o.poly(
                         &[p(sa, ha, -cw, z), p(sb, hb, -cw, z), p(sb, hb, cw, z), p(sa, ha, cw, z)],
@@ -1301,38 +1424,93 @@ impl RoadCtx<'_, '_> {
                         }
                         let (x0, x1, x2) = (cw * side, (cw + 0.2) * side, w2 * side);
                         let n_in = (-nrm * side).extend_to(city, r.a + d * m);
-                        self.o.poly(&[p(sa, ha, x0, 0.02), p(sb, hb, x0, 0.02), p(sb, hb, x0, 0.2), p(sa, ha, x0, 0.2)], n_in, &[[sa, 0.0], [sb, 0.0], [sb, 0.18], [sa, 0.18]], kerb);
-                        self.o.poly(&[p(sa, ha, x0, 0.2), p(sb, hb, x0, 0.2), p(sb, hb, x1, 0.2), p(sa, ha, x1, 0.2)], up, &[[sa, 0.0], [sb, 0.0], [sb, 0.2], [sa, 0.2]], kerb);
-                        self.o.poly(&[p(sa, ha, x1, 0.2), p(sb, hb, x1, 0.2), p(sb, hb, x2, 0.2), p(sa, ha, x2, 0.2)], up, &[[x1.abs(), sa], [x1.abs(), sb], [x2.abs(), sb], [x2.abs(), sa]], slabs);
+                        self.o.poly(
+                            &[p(sa, ha, x0, 0.02), p(sb, hb, x0, 0.02), p(sb, hb, x0, 0.2), p(sa, ha, x0, 0.2)],
+                            n_in,
+                            &[[sa, 0.0], [sb, 0.0], [sb, 0.18], [sa, 0.18]],
+                            kerb,
+                        );
+                        self.o.poly(
+                            &[p(sa, ha, x0, 0.2), p(sb, hb, x0, 0.2), p(sb, hb, x1, 0.2), p(sa, ha, x1, 0.2)],
+                            up,
+                            &[[sa, 0.0], [sb, 0.0], [sb, 0.2], [sa, 0.2]],
+                            kerb,
+                        );
+                        self.o.poly(
+                            &[p(sa, ha, x1, 0.2), p(sb, hb, x1, 0.2), p(sb, hb, x2, 0.2), p(sa, ha, x2, 0.2)],
+                            up,
+                            &[[x1.abs(), sa], [x1.abs(), sb], [x2.abs(), sb], [x2.abs(), sa]],
+                            slabs,
+                        );
                         let bottom = if bridge { -1.2 } else { -0.4 };
                         let n_out = (nrm * side).extend_to(city, r.a + d * m);
-                        self.o.poly(&[p(sa, ha, x2, bottom), p(sb, hb, x2, bottom), p(sb, hb, x2, 0.2), p(sa, ha, x2, 0.2)], n_out, &[[sa, 0.0], [sb, 0.0], [sb, 1.0], [sa, 1.0]], kerb);
+                        self.o.poly(
+                            &[p(sa, ha, x2, bottom), p(sb, hb, x2, bottom), p(sb, hb, x2, 0.2), p(sa, ha, x2, 0.2)],
+                            n_out,
+                            &[[sa, 0.0], [sb, 0.0], [sb, 1.0], [sa, 1.0]],
+                            kerb,
+                        );
                         // Bout de trottoir au debouche d'une rue.
                         for (s, h, inside) in [(sa, ha, sa - 0.02), (sb, hb, sb + 0.02)] {
                             if !walk_at(inside, side) {
                                 let dirn = if inside < s { -d } else { d };
                                 let n = dirn.extend_to(city, r.a + d * s);
-                                self.o.poly(&[p(s, h, x0, 0.02), p(s, h, x2, 0.02), p(s, h, x2, 0.2), p(s, h, x0, 0.2)], n, &[[0.0, 0.0], [1.0, 0.0], [1.0, 0.2], [0.0, 0.2]], kerb);
+                                self.o.poly(
+                                    &[p(s, h, x0, 0.02), p(s, h, x2, 0.02), p(s, h, x2, 0.2), p(s, h, x0, 0.2)],
+                                    n,
+                                    &[[0.0, 0.0], [1.0, 0.0], [1.0, 0.2], [0.0, 0.2]],
+                                    kerb,
+                                );
                             }
                         }
                     }
                 }
                 if bridge {
                     let concrete = plain([0.33, 0.32, 0.3]);
-                    self.o.poly(&[p(sa, ha, -w2, -1.2), p(sb, hb, -w2, -1.2), p(sb, hb, w2, -1.2), p(sa, ha, w2, -1.2)], -up, &[[0.0, 0.0]; 4], concrete);
+                    self.o.poly(
+                        &[p(sa, ha, -w2, -1.2), p(sb, hb, -w2, -1.2), p(sb, hb, w2, -1.2), p(sa, ha, w2, -1.2)],
+                        -up,
+                        &[[0.0, 0.0]; 4],
+                        concrete,
+                    );
                     for side in [-1.0, 1.0] {
                         let (xo, xi) = (w2 * side, (w2 - 0.35) * side);
                         let n_out = (nrm * side).extend_to(city, r.a + d * m);
                         if !walk_side(side) {
-                            self.o.poly(&[p(sa, ha, xo, -1.2), p(sb, hb, xo, -1.2), p(sb, hb, xo, 0.1), p(sa, ha, xo, 0.1)], n_out, &[[0.0, 0.0]; 4], concrete);
+                            self.o.poly(
+                                &[p(sa, ha, xo, -1.2), p(sb, hb, xo, -1.2), p(sb, hb, xo, 0.1), p(sa, ha, xo, 0.1)],
+                                n_out,
+                                &[[0.0, 0.0]; 4],
+                                concrete,
+                            );
                             if !carriage {
-                                self.o.poly(&[p(sa, ha, -w2, 0.1), p(sb, hb, -w2, 0.1), p(sb, hb, w2, 0.1), p(sa, ha, w2, 0.1)], up, &[[0.0, 0.0]; 4], concrete);
+                                self.o.poly(
+                                    &[p(sa, ha, -w2, 0.1), p(sb, hb, -w2, 0.1), p(sb, hb, w2, 0.1), p(sa, ha, w2, 0.1)],
+                                    up,
+                                    &[[0.0, 0.0]; 4],
+                                    concrete,
+                                );
                             }
                         }
                         let zb = if walk_side(side) { 0.2 } else { 0.1 };
-                        self.o.poly(&[p(sa, ha, xo, zb), p(sb, hb, xo, zb), p(sb, hb, xo, 1.25), p(sa, ha, xo, 1.25)], n_out, &[[0.0, 0.0]; 4], concrete);
-                        self.o.poly(&[p(sa, ha, xi, zb), p(sb, hb, xi, zb), p(sb, hb, xi, 1.25), p(sa, ha, xi, 1.25)], -n_out, &[[0.0, 0.0]; 4], concrete);
-                        self.o.poly(&[p(sa, ha, xi, 1.25), p(sb, hb, xi, 1.25), p(sb, hb, xo, 1.25), p(sa, ha, xo, 1.25)], up, &[[0.0, 0.0]; 4], concrete);
+                        self.o.poly(
+                            &[p(sa, ha, xo, zb), p(sb, hb, xo, zb), p(sb, hb, xo, 1.25), p(sa, ha, xo, 1.25)],
+                            n_out,
+                            &[[0.0, 0.0]; 4],
+                            concrete,
+                        );
+                        self.o.poly(
+                            &[p(sa, ha, xi, zb), p(sb, hb, xi, zb), p(sb, hb, xi, 1.25), p(sa, ha, xi, 1.25)],
+                            -n_out,
+                            &[[0.0, 0.0]; 4],
+                            concrete,
+                        );
+                        self.o.poly(
+                            &[p(sa, ha, xi, 1.25), p(sb, hb, xi, 1.25), p(sb, hb, xo, 1.25), p(sa, ha, xo, 1.25)],
+                            up,
+                            &[[0.0, 0.0]; 4],
+                            concrete,
+                        );
                     }
                 }
             }
@@ -1409,11 +1587,17 @@ impl RoadCtx<'_, '_> {
             let p = |s: f64, h: f64, x: f64| city.dir_of(r.a + d * s + nrm * x) * (planet_radius() + h + 0.1) - origin;
             let up = up_at((a + b) * 0.5);
             let white = with_param([0.6, 0.6, 0.58], mat::CROSSING, 0);
-            self.o.poly(&[p(a, ha, -cw), p(b, hb, -cw), p(b, hb, cw), p(a, ha, cw)], up, &[[-cw, 0.0], [-cw, 3.5], [cw, 3.5], [cw, 0.0]], white);
+            self.o.poly(
+                &[p(a, ha, -cw), p(b, hb, -cw), p(b, hb, cw), p(a, ha, cw)],
+                up,
+                &[[-cw, 0.0], [-cw, 3.5], [cw, 3.5], [cw, 0.0]],
+                white,
+            );
             let (sa, sb) = if end == 0 { (b + 0.9, b + 1.3) } else { (a - 1.3, a - 0.9) };
             if sa > 0.0 && sb < len {
                 let solid = with_param([0.6, 0.6, 0.58], mat::CROSSING, 1);
-                let (h0, h1) = (self.ground(r.a + d * sa) + deck_at(deck, sa), self.ground(r.a + d * sb) + deck_at(deck, sb));
+                let (h0, h1) =
+                    (self.ground(r.a + d * sa) + deck_at(deck, sa), self.ground(r.a + d * sb) + deck_at(deck, sb));
                 // Ligne d'arret sur la voie de droite seulement.
                 let (x0, x1) = if end == 0 { (-cw, 0.0) } else { (0.0, cw) };
                 self.o.poly(&[p(sa, h0, x0), p(sb, h1, x0), p(sb, h1, x1), p(sa, h0, x1)], up, &[[0.0, 0.0]; 4], solid);
@@ -1424,7 +1608,13 @@ impl RoadCtx<'_, '_> {
         let mut k = 0;
         let mut s = w0 + 9.0;
         while s < w1 - 4.0 {
-            let sides: &[f64] = if w2 >= 12.0 { &[-1.0, 1.0] } else if k % 2 == 0 { &[1.0] } else { &[-1.0] };
+            let sides: &[f64] = if w2 >= 12.0 {
+                &[-1.0, 1.0]
+            } else if k % 2 == 0 {
+                &[1.0]
+            } else {
+                &[-1.0]
+            };
             k += 1;
             let blocked = r.gaps.iter().any(|&(at, half, _)| (s - at as f64).abs() < half as f64 + 3.0);
             if !blocked {
@@ -1456,7 +1646,9 @@ impl RoadCtx<'_, '_> {
             k += 1;
             let here = s;
             s += 6.2;
-            if deck_at(deck, here) > 0.25 || r.gaps.iter().any(|&(at, half, _)| (here - at as f64).abs() < half as f64 + 4.5) {
+            if deck_at(deck, here) > 0.25
+                || r.gaps.iter().any(|&(at, half, _)| (here - at as f64).abs() < half as f64 + 4.5)
+            {
                 continue;
             }
             // Pas de voiture garee la ou l'autoroute debouche dans la rue.
@@ -1537,10 +1729,11 @@ pub fn build_city_mesh(gen: &Generator, id: NodeId, origin: DVec3, terrain: &Ter
         if city.dir.dot(cdir) < 0.5 {
             continue;
         }
-        let corners: Vec<DVec2> = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.5, 0.0), (1.0, 0.5), (0.5, 1.0), (0.0, 0.5)]
-            .iter()
-            .map(|&(s, t)| city.local(id.dir_at(s, t)))
-            .collect();
+        let corners: Vec<DVec2> =
+            [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.5, 0.0), (1.0, 0.5), (0.5, 1.0), (0.0, 0.5)]
+                .iter()
+                .map(|&(s, t)| city.local(id.dir_at(s, t)))
+                .collect();
         let (mut lo, mut hi) = (DVec2::splat(f64::MAX), DVec2::splat(f64::MIN));
         for c in &corners {
             lo = lo.min(*c);
@@ -1553,7 +1746,9 @@ pub fn build_city_mesh(gen: &Generator, id: NodeId, origin: DVec3, terrain: &Ter
         let pad = (hi - lo).max_element() * 0.03 + 2.0;
         let (lo, hi) = (lo - DVec2::splat(pad), hi + DVec2::splat(pad));
         let plan = city.plan(gen);
-        let own = |p: DVec2| id.locate(city.dir_of(p)).is_some_and(|(s, t)| (0.0..1.0).contains(&s) && (0.0..1.0).contains(&t));
+        let own = |p: DVec2| {
+            id.locate(city.dir_of(p)).is_some_and(|(s, t)| (0.0..1.0).contains(&s) && (0.0..1.0).contains(&t))
+        };
 
         // Batiments : chacun appartient au chunk qui contient son centre.
         for bi in plan.buildings_in(lo - DVec2::splat(60.0), hi + DVec2::splat(60.0)) {
@@ -1564,7 +1759,8 @@ pub fn build_city_mesh(gen: &Generator, id: NodeId, origin: DVec3, terrain: &Ter
             let c = b.center();
             let base = b.foot.iter().map(|q| terrain.at(city.dir_of(*q)).0).fold(f64::MAX, f64::min);
             let f = Frame::new(city, c, base, origin);
-            let mut ctx = Ctx { o: &mut out, f, rng: Rng(hash_seed(b.seed as u64, 0xB1D, 0)), tier, region: city.seed | 1 };
+            let mut ctx =
+                Ctx { o: &mut out, f, rng: Rng(hash_seed(b.seed as u64, 0xB1D, 0)), tier, region: city.seed | 1 };
             ctx.building(b);
         }
 
@@ -1607,7 +1803,6 @@ pub fn build_city_mesh(gen: &Generator, id: NodeId, origin: DVec3, terrain: &Ter
     }
     Some(CityMesh { vertices: out.v, indices: out.i, min: out.min, max: out.max, top: out.top })
 }
-
 
 // ---------------------------------------------------------------------------------------------
 // Autoroutes
@@ -1679,7 +1874,8 @@ impl Out {
         let asphalt = enc([0.05, 0.05, 0.055]);
         for side in [-1.0, 1.0] {
             let (x0, x1) = (side * med, side * (med + cw));
-            let pt = Paint { color: asphalt, mat: [mat::ROAD, 8 + hw.lanes, (cw * 4.0).min(255.0) as u8, (h % 251) as u8] };
+            let pt =
+                Paint { color: asphalt, mat: [mat::ROAD, 8 + hw.lanes, (cw * 4.0).min(255.0) as u8, (h % 251) as u8] };
             let (l, r) = if side > 0.0 { (x1, x0) } else { (x0, x1) };
             let (ul, ur) = if side > 0.0 { (cw, 0.0) } else { (0.0, cw) };
             self.band(a, b, l, 0.08, r, 0.08, [[ul, a.s], [ul, b.s], [ur, b.s], [ur, a.s]], pt);
@@ -1702,7 +1898,11 @@ impl Out {
             if bridge {
                 // Parapet de beton.
                 let xi = side * (half - 0.3);
-                let pts = if side > 0.0 { [(g1, 1.05), (xi, 1.05), (xi, 0.06)] } else { [(xi, 0.06), (xi, 1.05), (g1, 1.05)] };
+                let pts = if side > 0.0 {
+                    [(g1, 1.05), (xi, 1.05), (xi, 0.06)]
+                } else {
+                    [(xi, 0.06), (xi, 1.05), (g1, 1.05)]
+                };
                 self.profile_band(a, b, &pts, concrete);
             } else {
                 // Glissiere de securite.
@@ -1714,7 +1914,12 @@ impl Out {
                     let k1 = (b.s / 4.0).ceil() as i64;
                     for k in k0..k1 {
                         let t = (k as f64 * 4.0 - a.s) / (b.s - a.s).max(1e-6);
-                        let st = Station { s: k as f64 * 4.0, dir: a.dir.lerp(b.dir, t).normalize(), p: Profile { road: a.p.road + (b.p.road - a.p.road) * t, ..a.p }, ..*a };
+                        let st = Station {
+                            s: k as f64 * 4.0,
+                            dir: a.dir.lerp(b.dir, t).normalize(),
+                            p: Profile { road: a.p.road + (b.p.road - a.p.road) * t, ..a.p },
+                            ..*a
+                        };
                         self.slab(&st, xr + side * 0.18, xr + side * 0.06, -0.06, 0.06, 0.0, 0.8, steel);
                     }
                 }
@@ -1722,13 +1927,27 @@ impl Out {
         }
         // Terre-plein central.
         if tier == Tier::Low {
-            self.band(a, b, med, 0.08, -med, 0.08, [[0.0, 0.0]; 4], Paint { color: asphalt, mat: [mat::PLAIN, 0, 0, 0] });
+            self.band(
+                a,
+                b,
+                med,
+                0.08,
+                -med,
+                0.08,
+                [[0.0, 0.0]; 4],
+                Paint { color: asphalt, mat: [mat::PLAIN, 0, 0, 0] },
+            );
         } else {
             let verge = plain([0.13, 0.13, 0.12]);
             self.band(a, b, med, 0.07, 0.32, 0.07, [[0.0, 0.0]; 4], verge);
             self.band(a, b, -0.32, 0.07, -med, 0.07, [[0.0, 0.0]; 4], verge);
             // Separateur en beton, profil de Jersey.
-            self.profile_band(a, b, &[(0.32, 0.07), (0.16, 0.36), (0.11, 0.86), (-0.11, 0.86), (-0.16, 0.36), (-0.32, 0.07)], plain([0.3, 0.295, 0.28]));
+            self.profile_band(
+                a,
+                b,
+                &[(0.32, 0.07), (0.16, 0.36), (0.11, 0.86), (-0.11, 0.86), (-0.16, 0.36), (-0.32, 0.07)],
+                plain([0.3, 0.295, 0.28]),
+            );
         }
         if bridge {
             self.band(a, b, -half, -1.7, half, -1.7, [[0.0, 0.0]; 4], plain([0.3, 0.29, 0.27]));
@@ -1761,7 +1980,16 @@ impl Out {
             let (p0, p1) = (side * (med + 1.2), side * (med + cw - 2.8));
             let (hi, lo) = if side > 0.0 { (p1, p0) } else { (p0, p1) };
             self.slab(st, hi, lo, 0.25, 0.4, 4.9, 7.1, with([0.015, 0.14, 0.05], mat::PAINT));
-            self.slab(st, hi - 0.2 * side.signum().abs(), lo + 0.2 * side.signum().abs(), 0.4, 0.42, 5.1, 6.9, plain([0.55, 0.55, 0.52]));
+            self.slab(
+                st,
+                hi - 0.2 * side.signum().abs(),
+                lo + 0.2 * side.signum().abs(),
+                0.4,
+                0.42,
+                5.1,
+                6.9,
+                plain([0.55, 0.55, 0.52]),
+            );
         }
         self.slab(st, half - 0.5, -(half - 0.5), -0.25, 0.25, 7.0, 7.6, steel);
     }
@@ -1871,7 +2099,11 @@ fn circuit_mesh(out: &mut Out, gen: &Generator, id: NodeId) {
         let path = &circuit.paths[p as usize];
         let (k, n) = (k as usize, path.points.len());
         let k1 = if k + stride >= n {
-            if path.closed { 0 } else { n - 1 }
+            if path.closed {
+                0
+            } else {
+                n - 1
+            }
         } else {
             k + stride
         };
@@ -1883,7 +2115,13 @@ fn circuit_mesh(out: &mut Out, gen: &Generator, id: NodeId) {
             let dir = path.points[q];
             let fwd = path.tangent(q);
             let s = if q == 0 && k != 0 { path.length() } else { path.s[q] };
-            Station { s, dir, left: dir.cross(fwd).normalize(), fwd, p: Profile { road: levels[q], ground: levels[q], wet: false } }
+            Station {
+                s,
+                dir,
+                left: dir.cross(fwd).normalize(),
+                fwd,
+                p: Profile { road: levels[q], ground: levels[q], wet: false },
+            }
         };
         let (a, b) = (station(k), station(k1));
         let half = path.half;
@@ -2023,7 +2261,12 @@ mod tests {
                 let ground = gen.surface_detail(p.normalize(), &detail).height as f64;
                 // Pieds des murs, pentes sous les grandes emprises, piles de ponts : un peu sous le sol.
                 let alt = p.length() - planet_radius() - ground;
-                assert!((-30.0..800.0).contains(&alt), "LOD {lod} : sommet a {alt} m du sol, materiau {:?}, {:?}", v.mat, crate::world::generator::dir_to_lat_lon(p.normalize()));
+                assert!(
+                    (-30.0..800.0).contains(&alt),
+                    "LOD {lod} : sommet a {alt} m du sol, materiau {:?}, {:?}",
+                    v.mat,
+                    crate::world::generator::dir_to_lat_lon(p.normalize())
+                );
                 assert!(v.normal.iter().all(|x| x.is_finite()));
             }
             // Le chunk englobe ses batiments : sans cela, ils seraient elimines a tort.

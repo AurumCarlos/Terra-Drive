@@ -14,11 +14,11 @@
 //! - Une autoroute part d'une sortie de la ville : une avenue de son plan prolongee jusqu'au bord.
 
 use super::city::City;
+use super::fast_hash::FastMap;
 use super::generator::{planet_radius, smoothstep, Detail, Generator, Surface};
 use glam::{DVec2, DVec3};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
-use super::fast_hash::FastMap;
 use std::sync::OnceLock;
 
 /// Ecart entre deux points du trace, en metres.
@@ -53,6 +53,7 @@ pub struct Profile {
 }
 
 impl Profile {
+    /// Vrai si la chaussee passe sur un pont : au-dessus de l'eau, ou trop haut pour un remblai.
     pub fn bridge(&self) -> bool {
         self.wet || self.road - self.ground > VIADUCT
     }
@@ -80,10 +81,12 @@ impl Highway {
         Self { from, to, lanes, points, length, sections, over: Vec::new() }
     }
 
+    /// Longueur de l'autoroute, en metres.
     pub fn length(&self) -> f64 {
         self.length
     }
 
+    /// Le trace : directions depuis le centre de la planete, a pas constant.
     pub fn points(&self) -> &[DVec3] {
         &self.points
     }
@@ -142,10 +145,12 @@ pub struct Hit {
     pub dist: f64,
 }
 
+/// Morceaux de trace par maille de la sphere : (autoroute, premier segment, dernier segment).
+type RouteIndex = FastMap<(u8, i32, i32), Vec<(u32, u32, u32)>>;
+
 pub struct Highways {
     pub list: Vec<Highway>,
-    /// Morceaux de trace par maille : (autoroute, premier segment, dernier segment).
-    index: FastMap<(u8, i32, i32), Vec<(u32, u32, u32)>>,
+    index: RouteIndex,
 }
 
 fn key(dir: DVec3) -> (u8, i32, i32) {
@@ -163,8 +168,9 @@ fn key(dir: DVec3) -> (u8, i32, i32) {
 
 /// Polyligne sur la sphere, re-echantillonnee a pas constant (le dernier pas est plus court).
 fn resample(line: &[DVec3], step: f64) -> Vec<DVec3> {
+    let (Some(&first), Some(&end)) = (line.first(), line.last()) else { return Vec::new() };
     let r = planet_radius();
-    let mut out = vec![line[0]];
+    let mut out = vec![first];
     let mut carry = 0.0;
     for w in line.windows(2) {
         let len = (w[1] - w[0]).length() * r;
@@ -175,10 +181,11 @@ fn resample(line: &[DVec3], step: f64) -> Vec<DVec3> {
         }
         carry = len - (s - step);
     }
-    if carry > 1.0 || out.len() < 2 {
-        out.push(*line.last().unwrap());
-    } else {
-        *out.last_mut().unwrap() = *line.last().unwrap();
+    // Un dernier pas tombe sur l'arrivee, a un metre pres, est remplace par elle.
+    let replace = carry <= 1.0 && out.len() >= 2;
+    match out.last_mut() {
+        Some(last) if replace => *last = end,
+        _ => out.push(end),
     }
     out
 }
@@ -199,6 +206,7 @@ fn box_filter(v: &[f64], r: usize) -> Vec<f64> {
 }
 
 impl Highways {
+    /// Aucune autoroute : pour une planete sans villes, ou pendant sa construction.
     pub fn empty() -> Self {
         Self { list: Vec::new(), index: FastMap::default() }
     }
@@ -367,7 +375,7 @@ impl Highways {
     fn build_index(&mut self) {
         let r = planet_radius();
         let m = (INFLUENCE + 60.0) / r;
-        let mut index: FastMap<(u8, i32, i32), Vec<(u32, u32, u32)>> = FastMap::default();
+        let mut index = RouteIndex::default();
         for (h, hw) in self.list.iter().enumerate() {
             for k in 0..hw.points.len() - 1 {
                 let (a, b) = (hw.points[k], hw.points[k + 1]);
@@ -424,7 +432,10 @@ impl Highways {
                             if (0.0..=1.0).contains(&ta) && (0.0..=1.0).contains(&tb) {
                                 let sa = ka as f64 * POINT_STEP + ta * a.seg_len(ka as usize);
                                 let sb = kb as f64 * POINT_STEP + tb * b.seg_len(kb as usize);
-                                if !found.iter().any(|f| f.0 == hi.0 as usize && f.2 == lo.0 as usize && (f.1 - sb).abs() < 60.0) {
+                                if !found
+                                    .iter()
+                                    .any(|f| f.0 == hi.0 as usize && f.2 == lo.0 as usize && (f.1 - sb).abs() < 60.0)
+                                {
                                     found.push((hi.0 as usize, sb, lo.0 as usize, sa));
                                 }
                             }
@@ -472,7 +483,7 @@ impl Highways {
                 }
             }
         }
-        edges.sort_by(|x, y| d(x.0, x.1).partial_cmp(&d(y.0, y.1)).unwrap());
+        edges.sort_by(|x, y| d(x.0, x.1).total_cmp(&d(y.0, y.1)));
 
         // Les sorties possibles de chaque ville, en parallele.
         let options: Vec<Vec<(f64, f64)>> = {
@@ -497,7 +508,7 @@ impl Highways {
                         })
                     })
                     .collect();
-                handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
+                handles.into_iter().flat_map(crate::sync::join).collect()
             });
             all.sort_by_key(|x| x.0);
             all.into_iter().map(|x| x.1).collect()
@@ -509,7 +520,10 @@ impl Highways {
             // Les sorties d'abord, une ville apres l'autre ; puis les chemins, en parallele.
             let mut jobs = Vec::new();
             for &(a, b) in pairs {
-                let (Some(ea), Some(eb)) = (pick_exit(&options[a], &cities[a], cities[b].dir, &used[a]), pick_exit(&options[b], &cities[b], cities[a].dir, &used[b])) else {
+                let (Some(ea), Some(eb)) = (
+                    pick_exit(&options[a], &cities[a], cities[b].dir, &used[a]),
+                    pick_exit(&options[b], &cities[b], cities[a].dir, &used[b]),
+                ) else {
                     if std::env::var("TERRA_DEBUG_HW").is_ok() {
                         eprintln!("pas de sortie {a}-{b}");
                     }
@@ -538,13 +552,16 @@ impl Highways {
                                 }
                                 let k = jobs.len() - 1 - n;
                                 let (a, b, ea, eb) = jobs[k];
-                                out.push((k, link(gen, cities_ref, a, b, ea, eb, None).map(|line| (a, b, ea, eb, line))));
+                                out.push((
+                                    k,
+                                    link(gen, cities_ref, a, b, ea, eb, None).map(|line| (a, b, ea, eb, line)),
+                                ));
                             }
                             out
                         })
                     })
                     .collect();
-                let mut all: Vec<(usize, Option<Route>)> = handles.into_iter().flat_map(|h| h.join().unwrap()).collect();
+                let mut all: Vec<(usize, Option<Route>)> = handles.into_iter().flat_map(crate::sync::join).collect();
                 all.sort_by_key(|x| x.0);
                 all.into_iter().map(|x| x.1).collect()
             });
@@ -569,7 +586,7 @@ impl Highways {
         let mut tried: std::collections::HashSet<(usize, usize)> = edges.iter().copied().collect();
         for _ in 0..8 {
             let mut comp: Vec<usize> = (0..n).collect();
-            fn find(c: &mut Vec<usize>, x: usize) -> usize {
+            fn find(c: &mut [usize], x: usize) -> usize {
                 let mut x = x;
                 while c[x] != x {
                     c[x] = c[c[x]];
@@ -583,7 +600,9 @@ impl Highways {
             }
             let roots: Vec<usize> = (0..n).map(|i| find(&mut comp, i)).collect();
             // Pour chaque couple de morceaux, les trois paires de villes les plus proches pas encore essayees.
-            let mut best: FastMap<(usize, usize), Vec<(f64, usize, usize)>> = FastMap::default();
+            /// Paires de villes candidates : (distance, ville, ville).
+            type Pairs = Vec<(f64, usize, usize)>;
+            let mut best: FastMap<(usize, usize), Pairs> = FastMap::default();
             for a in 0..n {
                 for b in a + 1..n {
                     if roots[a] == roots[b] || tried.contains(&(a, b)) || d(a, b) > repair_dist {
@@ -592,7 +611,7 @@ impl Highways {
                     let key = (roots[a].min(roots[b]), roots[a].max(roots[b]));
                     let list = best.entry(key).or_default();
                     list.push((d(a, b), a, b));
-                    list.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap());
+                    list.sort_by(|x, y| x.0.total_cmp(&y.0));
                     list.truncate(3);
                 }
             }
@@ -601,7 +620,7 @@ impl Highways {
             }
             // Les couples de morceaux les plus proches d'abord ; une seule paire par ville a chaque tour.
             let mut groups: Vec<Vec<(f64, usize, usize)>> = best.into_values().collect();
-            groups.sort_by(|x, y| x[0].0.partial_cmp(&y[0].0).unwrap());
+            groups.sort_by(|x, y| x[0].0.total_cmp(&y[0].0));
             let mut busy = vec![false; n];
             let mut pairs: Vec<(usize, usize)> = Vec::new();
             for g in groups.iter().take(48) {
@@ -651,7 +670,7 @@ impl Highways {
                         })
                     })
                     .collect();
-                handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
+                handles.into_iter().flat_map(crate::sync::join).collect()
             })
         };
         step("index provisoire");
@@ -731,7 +750,13 @@ fn exit_costs(gen: &Generator, city: &City) -> Vec<(f64, f64)> {
                 }
                 s += STEP;
             }
-            let wet = if longest > 250.0 { 4.0 } else if any { 1.0 } else { 0.0 };
+            let wet = if longest > 250.0 {
+                4.0
+            } else if any {
+                1.0
+            } else {
+                0.0
+            };
             (a, bias + wet)
         })
         .collect()
@@ -747,7 +772,7 @@ fn pick_exit(options: &[(f64, f64)], city: &City, to: DVec3, used: &[f64]) -> Op
             let turn = angle_diff(a, want);
             (turn <= 2.1).then_some((a, turn + cost))
         })
-        .min_by(|x, y| x.1.partial_cmp(&y.1).unwrap())
+        .min_by(|x, y| x.1.total_cmp(&y.1))
         .map(|x| x.0)
 }
 
@@ -770,7 +795,15 @@ impl Plane {
 }
 
 /// Trace d'une ville a l'autre : de la sortie de l'une a celle de l'autre.
-fn link(gen: &Generator, cities: &[City], a: usize, b: usize, ea: f64, eb: f64, avoid: Option<(&Highways, usize)>) -> Option<Vec<DVec3>> {
+fn link(
+    gen: &Generator,
+    cities: &[City],
+    a: usize,
+    b: usize,
+    ea: f64,
+    eb: f64,
+    avoid: Option<(&Highways, usize)>,
+) -> Option<Vec<DVec3>> {
     let (ca, cb) = (&cities[a], &cities[b]);
     let gate = |c: &City, e: f64, extra: f64| c.dir_of(DVec2::from_angle(e) * (c.reach(e) + extra));
     let (start, end) = (gate(ca, ea, 0.0), gate(cb, eb, 0.0));
@@ -786,7 +819,7 @@ fn link(gen: &Generator, cities: &[City], a: usize, b: usize, ea: f64, eb: f64, 
             next.push(w[0].lerp(w[1], 0.25).normalize());
             next.push(w[0].lerp(w[1], 0.75).normalize());
         }
-        next.push(*line.last().unwrap());
+        next.push(end);
         line = next;
     }
     Some(line)
@@ -794,7 +827,13 @@ fn link(gen: &Generator, cities: &[City], a: usize, b: usize, ea: f64, eb: f64, 
 
 /// A* sur le relief, de a a b (directions). Rend le chemin simplifie, a et b compris.
 /// `avoid` : des autoroutes deja tracees, dont on s'ecarte (sauf pour les croiser).
-fn search(gen: &Generator, cities: &[City], a: DVec3, b: DVec3, avoid: Option<(&Highways, usize)>) -> Option<Vec<DVec3>> {
+fn search(
+    gen: &Generator,
+    cities: &[City],
+    a: DVec3,
+    b: DVec3,
+    avoid: Option<(&Highways, usize)>,
+) -> Option<Vec<DVec3>> {
     let r = planet_radius();
     let m = (a + b).normalize();
     let x = b - a;
@@ -806,7 +845,8 @@ fn search(gen: &Generator, cities: &[City], a: DVec3, b: DVec3, avoid: Option<(&
     let cell = (len / 220.0).clamp(500.0, 6000.0).max(len / 270.0);
     let half = (len * 0.32).max(15_000.0);
     let (x0, y0) = (pa.x.min(pb.x) - 15_000.0, -half);
-    let (nx, ny) = (((pa.x.max(pb.x) + 15_000.0 - x0) / cell).ceil() as usize + 1, ((2.0 * half) / cell).ceil() as usize + 1);
+    let (nx, ny) =
+        (((pa.x.max(pb.x) + 15_000.0 - x0) / cell).ceil() as usize + 1, ((2.0 * half) / cell).ceil() as usize + 1);
     let center = |i: usize, j: usize| DVec2::new(x0 + i as f64 * cell, y0 + j as f64 * cell);
     let cell_of = |p: DVec2| (((p.x - x0) / cell).round() as usize, ((p.y - y0) / cell).round() as usize);
     let detail = Detail::for_spacing(cell);
@@ -926,7 +966,9 @@ fn search(gen: &Generator, cities: &[City], a: DVec3, b: DVec3, avoid: Option<(&
     cells.reverse();
     let mut pts: Vec<DVec2> = cells.iter().map(|&c| center(c % nx, c / nx)).collect();
     pts[0] = pa;
-    *pts.last_mut().unwrap() = pb;
+    if let Some(last) = pts.last_mut() {
+        *last = pb;
+    }
     let pts = douglas_peucker(&pts, cell * 0.75);
     Some(pts.into_iter().map(|p| plane.dir(p)).collect())
 }
@@ -935,7 +977,7 @@ fn douglas_peucker(p: &[DVec2], tol: f64) -> Vec<DVec2> {
     if p.len() < 3 {
         return p.to_vec();
     }
-    let (a, b) = (p[0], *p.last().unwrap());
+    let (a, b) = (p[0], p[p.len() - 1]);
     let ab = b - a;
     let len = ab.length().max(1e-9);
     let (mut worst, mut at) = (0.0, 0);

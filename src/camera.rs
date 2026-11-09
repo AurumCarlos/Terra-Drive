@@ -32,19 +32,23 @@ impl Camera {
         }
     }
 
+    /// Verticale du lieu : du centre de la planete vers la camera.
     pub fn up(&self) -> DVec3 {
         self.position.normalize_or(DVec3::Y)
     }
 
+    /// Direction du regard, en double precision.
     pub fn forward_d(&self) -> DVec3 {
         let (s, c) = (self.pitch as f64).sin_cos();
         self.heading * c + self.up() * s
     }
 
+    /// Direction du regard.
     pub fn forward(&self) -> Vec3 {
         self.forward_d().as_vec3()
     }
 
+    /// Vers la droite du regard, a l'horizontale.
     pub fn right(&self) -> DVec3 {
         self.heading.cross(self.up())
     }

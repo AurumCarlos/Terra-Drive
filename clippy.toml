@@ -1,0 +1,3 @@
+# Les constructeurs de geometrie prennent une forme, des dimensions et une teinte : huit arguments
+# positionnels y restent plus lisibles qu'une structure par primitive.
+too-many-arguments-threshold = 8

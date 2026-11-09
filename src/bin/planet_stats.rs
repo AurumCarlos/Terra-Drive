@@ -5,7 +5,13 @@ use terra::world::generator::{dir_to_lat_lon, Generator, PlanetParams};
 fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
     let get = |i: usize, d: f64| a.get(i).and_then(|s| s.parse().ok()).unwrap_or(d);
-    let params = PlanetParams { seed: get(0, 3.0) as u64, size: get(1, 1.0) as f32, cities: get(2, 140.0) as u32, rivers: get(3, 1.0) > 0.5, ..Default::default() };
+    let params = PlanetParams {
+        seed: get(0, 3.0) as u64,
+        size: get(1, 1.0) as f32,
+        cities: get(2, 140.0) as u32,
+        rivers: get(3, 1.0) > 0.5,
+        ..Default::default()
+    };
     terra::world::generator::set_planet_radius(params.radius());
     let t = Instant::now();
     let gen = Generator::new(params);
@@ -64,13 +70,21 @@ fn main() {
         }
     }
     println!("traversees de villes : {:.1} km", through as f64 * 0.5);
-    let names = |h: &terra::world::highway::Highway| (gen.cities.list[h.from].name.clone(), gen.cities.list[h.to].name.clone());
+    let names =
+        |h: &terra::world::highway::Highway| (gen.cities.list[h.from].name.clone(), gen.cities.list[h.to].name.clone());
     for (i, h) in hw.list.iter().enumerate().take(6) {
         let s = h.length() * 0.35;
         let (d, d2) = (h.dir_at(s), h.dir_at(s + 50.0));
         let (lat, lon) = dir_to_lat_lon(d);
         let p = hw.profile(&gen, i, s);
-        println!("{i} {:?} {:.0} km, {} voies : {lat:.4},{lon:.4} cap {:.0} route {:.0} m", names(h), h.length() / 1000.0, h.lanes, heading(d, d2), p.road);
+        println!(
+            "{i} {:?} {:.0} km, {} voies : {lat:.4},{lon:.4} cap {:.0} route {:.0} m",
+            names(h),
+            h.length() / 1000.0,
+            h.lanes,
+            heading(d, d2),
+            p.road
+        );
     }
     // Un pont sur une riviere (eau sur moins de 400 m), un viaduc, et un depart de ville.
     let (mut river, mut viaduct) = (0, 0);
@@ -85,7 +99,12 @@ fn main() {
                 if run > 20.0 && run < 400.0 && river < 2 {
                     let (d, d2) = (h.dir_at(s - run * 0.5 - 250.0), h.dir_at(s - run * 0.5));
                     let (lat, lon) = dir_to_lat_lon(d);
-                    println!("pont sur {:?} : {lat:.4},{lon:.4} cap {:.0} route {:.0} m, {run} m d'eau", names(h), heading(d, d2), p.road);
+                    println!(
+                        "pont sur {:?} : {lat:.4},{lon:.4} cap {:.0} route {:.0} m, {run} m d'eau",
+                        names(h),
+                        heading(d, d2),
+                        p.road
+                    );
                     // Vue de cote, a 120 m de l'axe.
                     let c = h.dir_at(s - run * 0.5);
                     let side = c.cross(h.tangent_at(s - run * 0.5));
@@ -98,7 +117,13 @@ fn main() {
                 if p.road - p.ground > 18.0 && viaduct < 2 {
                     let (d, d2) = (h.dir_at(s - 250.0), h.dir_at(s));
                     let (lat, lon) = dir_to_lat_lon(d);
-                    println!("viaduc sur {:?} : {lat:.4},{lon:.4} cap {:.0} route {:.0} m, sol {:.0} m", names(h), heading(d, d2), p.road, p.ground);
+                    println!(
+                        "viaduc sur {:?} : {lat:.4},{lon:.4} cap {:.0} route {:.0} m, sol {:.0} m",
+                        names(h),
+                        heading(d, d2),
+                        p.road,
+                        p.ground
+                    );
                     viaduct += 1;
                     s += 3000.0;
                 }
@@ -135,11 +160,14 @@ fn main() {
                         let plan = c.plan(gen);
                         let mut gaps = Vec::new();
                         for h in &gen.cities.highways.list {
+                            let (Some(&first), Some(&last)) = (h.points().first(), h.points().last()) else {
+                                continue;
+                            };
                             if h.from == i {
-                                gaps.push(plan.road_distance(c.local(h.points()[0])));
+                                gaps.push(plan.road_distance(c.local(first)));
                             }
                             if h.to == i {
-                                gaps.push(plan.road_distance(c.local(*h.points().last().unwrap())));
+                                gaps.push(plan.road_distance(c.local(last)));
                             }
                         }
                         out.push((i, plan.road_networks(), gaps));
@@ -148,21 +176,34 @@ fn main() {
                 })
             })
             .collect();
-        handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
+        handles.into_iter().flat_map(terra::sync::join).collect()
     });
     let split: Vec<_> = results.iter().filter(|r| r.1 > 1).collect();
     let loose: Vec<f64> = results.iter().flat_map(|r| r.2.iter().copied()).filter(|g| *g > 2.0).collect();
     let ends: usize = results.iter().map(|r| r.2.len()).sum();
-    println!("plans en {:.1} s : {} villes au reseau coupe, {}/{} bouts d'autoroute loin d'une rue", t.elapsed().as_secs_f32(), split.len(), loose.len(), ends);
+    println!(
+        "plans en {:.1} s : {} villes au reseau coupe, {}/{} bouts d'autoroute loin d'une rue",
+        t.elapsed().as_secs_f32(),
+        split.len(),
+        loose.len(),
+        ends
+    );
     for (i, k, _) in split.iter().take(8) {
         println!("  {} : {k} morceaux", gen.cities.list[*i].name);
     }
     for (i, _, g) in results.iter().filter(|r| r.2.iter().any(|g| *g > 2.0)).take(8) {
         let c = &gen.cities.list[*i];
-        println!("  {} ({:?}, rayon {:.0}) : {:?}", c.name, c.style, c.radius, g.iter().map(|x| x.round()).collect::<Vec<_>>());
+        println!(
+            "  {} ({:?}, rayon {:.0}) : {:?}",
+            c.name,
+            c.style,
+            c.radius,
+            g.iter().map(|x| x.round()).collect::<Vec<_>>()
+        );
         let plan = c.plan(&gen);
         for h in &gen.cities.highways.list {
-            for (who, p) in [(h.from, h.points()[0]), (h.to, *h.points().last().unwrap())] {
+            let (Some(&first), Some(&last)) = (h.points().first(), h.points().last()) else { continue };
+            for (who, p) in [(h.from, first), (h.to, last)] {
                 if who != *i {
                     continue;
                 }
@@ -179,7 +220,12 @@ fn main() {
                     .map(|r| r.a.dot(line).max(r.b.dot(line)))
                     .fold(f64::MIN, f64::max);
                 let (lat, lon) = dir_to_lat_lon(p);
-                println!("    bout a {:.0} m (contour {:.0} m), rue de sortie jusqu'a {:.0} m ; {lat:.5},{lon:.5}", q.length(), c.reach(a), along);
+                println!(
+                    "    bout a {:.0} m (contour {:.0} m), rue de sortie jusqu'a {:.0} m ; {lat:.5},{lon:.5}",
+                    q.length(),
+                    c.reach(a),
+                    along
+                );
             }
         }
     }

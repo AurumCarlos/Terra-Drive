@@ -16,6 +16,7 @@ pub struct Input {
 }
 
 impl Input {
+    /// Vrai tant que la touche est enfoncee.
     pub fn held(&self, key: KeyCode) -> bool {
         self.held.contains(&key)
     }

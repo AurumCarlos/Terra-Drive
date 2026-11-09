@@ -1,0 +1,3 @@
+# Lignes larges et constructions courtes sur une ligne : le style du projet.
+max_width = 120
+use_small_heuristics = "Max"

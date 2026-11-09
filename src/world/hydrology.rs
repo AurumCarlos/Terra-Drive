@@ -3,7 +3,7 @@
 //! des depressions donne les lacs et leur exutoire, et le cumul des pluies donne les rivieres.
 
 use super::cube::{CubeField, CubeGrid};
-use super::generator::{smoothstep, PlanetParams, planet_radius};
+use super::generator::{planet_radius, smoothstep, PlanetParams};
 use super::noise::{hash_seed, Noise, Rng};
 use super::tectonics::{threshold_for_share, Tectonics};
 use glam::{DVec3, Vec3};
@@ -251,9 +251,12 @@ fn ocean_floor(shore: f32, age: f32) -> f32 {
 }
 
 impl Hydrology {
+    /// Simule l'eau de la planete : relief de base, pluie donnee par `rain_at` (direction, altitude),
+    /// ecoulement, lacs et rivieres.
     pub fn build(params: &PlanetParams, plates: &Tectonics, rain_at: &(dyn Fn(DVec3, f32) -> f32 + Sync)) -> Self {
         let layer = |i: i64| Noise::new(hash_seed(params.seed, 0x11D0, i));
-        let (coast, plateau, ranges, relief_noise, pits, chance) = (layer(1), layer(2), layer(3), layer(4), layer(5), layer(6));
+        let (coast, plateau, ranges, relief_noise, pits, chance) =
+            (layer(1), layer(2), layer(3), layer(4), layer(5), layer(6));
         let crust = CubeField::from_cells(plates.grid, &plates.crust);
         let orogeny = CubeField::from_cells(plates.grid, &plates.orogeny);
         let age = CubeField::from_cells(plates.grid, &plates.age);
@@ -357,7 +360,8 @@ impl Hydrology {
         step("lacs");
 
         // Une fois les lacs connus, les autres cuvettes sont comblees de sediments.
-        let surface: Vec<f32> = (0..fine.cells()).map(|c| if lake_of[c] == NONE { flow.filled[c] } else { h3[c] }).collect();
+        let surface: Vec<f32> =
+            (0..fine.cells()).map(|c| if lake_of[c] == NONE { flow.filled[c] } else { h3[c] }).collect();
         let mask: Vec<f32> = lake_of.iter().map(|l| (*l != NONE) as u8 as f32).collect();
 
         let rain3 = {
@@ -376,7 +380,8 @@ impl Hydrology {
         let (index_grid, index_start, index_edges) = build_index(&edges);
         step("index");
 
-        let weighted: Vec<f32> = lake_of.iter().map(|l| if *l == NONE { 0.0 } else { lakes_found[*l as usize].level }).collect();
+        let weighted: Vec<f32> =
+            lake_of.iter().map(|l| if *l == NONE { 0.0 } else { lakes_found[*l as usize].level }).collect();
 
         Self {
             elevation: CubeField::from_cells(fine, &surface),
@@ -505,7 +510,11 @@ impl Hydrology {
 
     /// Positions d'un troncon, pour les cartes et les tests : debut, milieu, fin.
     pub fn edge_points(&self, edge: &RiverEdge) -> [DVec3; 3] {
-        let (a, c, b) = (Vec3::from_array(edge.a).as_dvec3(), Vec3::from_array(edge.c).as_dvec3(), Vec3::from_array(edge.b).as_dvec3());
+        let (a, c, b) = (
+            Vec3::from_array(edge.a).as_dvec3(),
+            Vec3::from_array(edge.c).as_dvec3(),
+            Vec3::from_array(edge.b).as_dvec3(),
+        );
         [a.normalize(), (a * 0.25 + c * 0.5 + b * 0.25).normalize(), b.normalize()]
     }
 }
@@ -580,13 +589,21 @@ fn half_width(area: f32) -> f32 {
     (0.42 * area.sqrt()).clamp(2.5, 3500.0)
 }
 
-fn build_rivers(seed: u64, grid: CubeGrid, flow: &Drainage, area: &[f32], lake_of: &[u32], found: &[FoundLake]) -> (Vec<RiverEdge>, Vec<Lake>) {
+fn build_rivers(
+    seed: u64,
+    grid: CubeGrid,
+    flow: &Drainage,
+    area: &[f32],
+    lake_of: &[u32],
+    found: &[FoundLake],
+) -> (Vec<RiverEdge>, Vec<Lake>) {
     let cells = grid.cells();
     let mut is_river = vec![false; cells];
     for &c in &flow.order {
         let c = c as usize;
         // Plus d'eau en altitude : la pluie y tombe plus, et les sources y sont plus proches.
-        let min = MIN_RIVER_AREA + (MIN_MOUNTAIN_RIVER_AREA - MIN_RIVER_AREA) * smoothstep(300.0, 1400.0, flow.filled[c]);
+        let min =
+            MIN_RIVER_AREA + (MIN_MOUNTAIN_RIVER_AREA - MIN_RIVER_AREA) * smoothstep(300.0, 1400.0, flow.filled[c]);
         is_river[c] = area[c] >= min;
     }
     // Une riviere ne s'arrete pas en chemin, meme si le seuil est plus haut en aval.
@@ -603,7 +620,10 @@ fn build_rivers(seed: u64, grid: CubeGrid, flow: &Drainage, area: &[f32], lake_o
         let mut outlet = NONE;
         for &c in &lake.cells {
             let r = flow.receiver[c as usize];
-            if r != NONE && lake_of[r as usize] != l as u32 && (outlet == NONE || area[c as usize] > area[outlet as usize]) {
+            if r != NONE
+                && lake_of[r as usize] != l as u32
+                && (outlet == NONE || area[c as usize] > area[outlet as usize])
+            {
                 outlet = c;
             }
         }
@@ -657,10 +677,15 @@ fn build_rivers(seed: u64, grid: CubeGrid, flow: &Drainage, area: &[f32], lake_o
 
     let level_of = |c: usize| -> f32 {
         let h = flow.filled[c];
-        if h <= 0.0 || flow.receiver[c] == NONE { 0.0 } else { h }
+        if h <= 0.0 || flow.receiver[c] == NONE {
+            0.0
+        } else {
+            h
+        }
     };
     let is_sea = |c: usize| flow.receiver[c] == NONE;
-    let mut nodes: std::collections::HashMap<u32, DVec3> = std::collections::HashMap::with_capacity(river_cells.len() * 2);
+    let mut nodes: std::collections::HashMap<u32, DVec3> =
+        std::collections::HashMap::with_capacity(river_cells.len() * 2);
     let mut pos = |c: usize| -> DVec3 { *nodes.entry(c as u32).or_insert_with(|| node(c)) };
 
     let mut edges = Vec::with_capacity(river_cells.len());
@@ -759,7 +784,7 @@ fn build_index(edges: &[RiverEdge]) -> (CubeGrid, Vec<u32>, Vec<u32>) {
                 })
             })
             .collect();
-        handles.into_iter().flat_map(|h| h.join().expect("index des rivieres")).collect()
+        handles.into_iter().flat_map(crate::sync::join).collect()
     });
     pairs.sort_unstable();
     let mut start = vec![0u32; grid.cells() + 1];
@@ -778,7 +803,11 @@ fn index_pairs(grid: CubeGrid, edges: &[RiverEdge], first: u32) -> Vec<(u32, u32
     let mut cells: Vec<u32> = Vec::with_capacity(160);
     for (e, edge) in edges.iter().enumerate() {
         let e = first as usize + e;
-        let (a, c, b) = (Vec3::from_array(edge.a).as_dvec3(), Vec3::from_array(edge.c).as_dvec3(), Vec3::from_array(edge.b).as_dvec3());
+        let (a, c, b) = (
+            Vec3::from_array(edge.a).as_dvec3(),
+            Vec3::from_array(edge.c).as_dvec3(),
+            Vec3::from_array(edge.b).as_dvec3(),
+        );
         let radius = (edge.reach as f64 + MAX_WARP + 10_000.0) / planet_radius();
         cells.clear();
         for t in [0.0, 0.5, 1.0] {

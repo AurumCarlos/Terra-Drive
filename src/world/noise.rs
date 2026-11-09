@@ -8,6 +8,7 @@ use glam::{DVec3, Vec3};
 pub struct Rng(pub u64);
 
 impl Rng {
+    /// Le nombre suivant de la suite (SplitMix64).
     pub fn next_u64(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.0;
@@ -21,6 +22,7 @@ impl Rng {
         (self.next_u64() >> 40) as f32 / (1u64 << 24) as f32
     }
 
+    /// Nombre uniforme entre `min` et `max`.
     pub fn range(&mut self, min: f32, max: f32) -> f32 {
         min + (max - min) * self.f32()
     }
@@ -59,6 +61,7 @@ pub struct Noise {
 }
 
 impl Noise {
+    /// Bruit de la graine `seed`.
     pub fn new(seed: u64) -> Self {
         Self { seed }
     }

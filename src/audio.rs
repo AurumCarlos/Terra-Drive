@@ -172,7 +172,8 @@ struct Cricket {
 /// Amplitudes des harmoniques du cycle moteur (deux tours) : l'ordre 8 est l'allumage d'un V8, l'ordre 4
 /// le grondement du vilebrequin croise, les autres colorent le timbre.
 const ENGINE_HARMONICS: [f32; 24] = [
-    0.05, 0.2, 0.08, 0.55, 0.1, 0.25, 0.07, 1.0, 0.12, 0.3, 0.06, 0.45, 0.05, 0.15, 0.04, 0.35, 0.03, 0.1, 0.03, 0.15, 0.02, 0.06, 0.02, 0.1,
+    0.05, 0.2, 0.08, 0.55, 0.1, 0.25, 0.07, 1.0, 0.12, 0.3, 0.06, 0.45, 0.05, 0.15, 0.04, 0.35, 0.03, 0.1, 0.03, 0.15,
+    0.02, 0.06, 0.02, 0.1,
 ];
 
 /// Dephasage de chaque harmonique (sinus, cosinus de k^2 * 0,7) : un timbre rauque, pas une sirene.
@@ -253,6 +254,7 @@ pub struct Synth {
 }
 
 impl Synth {
+    /// Synthetiseur pour une sortie a `rate` echantillons par seconde.
     pub fn new(rate: f32) -> Self {
         let mut rng = Rng(0x9E37_79B9);
         let crickets = std::array::from_fn(|k| Cricket {
@@ -310,6 +312,7 @@ impl Synth {
         }
     }
 
+    /// Recoit les reglages de l'image en cours ; le son les rejoint en douceur, sans clic.
     pub fn set(&mut self, params: SoundParams) {
         if params.impact.0 != self.impact_id {
             self.impact_id = params.impact.0;
@@ -404,7 +407,12 @@ impl Synth {
             self.pops *= 1.0 - 60.0 * dt;
             let pop = self.pops * self.rng.noise() * 0.8;
             let cutoff = 250.0 + rpm * 0.22 + load * 2200.0;
-            let (low, _, _) = self.engine_lp.run(tone * 0.18 * (0.35 + 0.65 * load) + exhaust * (0.6 + 1.6 * load) + pop, cutoff, 0.5, rate);
+            let (low, _, _) = self.engine_lp.run(
+                tone * 0.18 * (0.35 + 0.65 * load) + exhaust * (0.6 + 1.6 * load) + pop,
+                cutoff,
+                0.5,
+                rate,
+            );
             // Admission : un souffle qui siffle avec la charge.
             let (_, band, _) = self.intake.run(self.rng.noise(), 1800.0 + rpm * 0.25, 0.3, rate);
             let engine = (low * (0.55 + 0.45 * load) + band * 0.03 * load * rpm / 7000.0) * cut;
@@ -418,7 +426,8 @@ impl Synth {
             let roll_amp = (v / 35.0).min(1.0) * (0.12 + 0.25 * self.rough);
             let road_l = self.road[0].run(self.rng.noise(), 60.0 + v * 9.0, rate) * roll_amp;
             let road_r = self.road[1].run(self.rng.noise(), 60.0 + v * 9.0, rate) * roll_amp;
-            let crackle = if self.rng.unit() < self.rough * (v / 20.0).min(1.0) * 0.02 { self.rng.noise() * 2.0 } else { 0.0 };
+            let crackle =
+                if self.rng.unit() < self.rough * (v / 20.0).min(1.0) * 0.02 { self.rng.noise() * 2.0 } else { 0.0 };
             let (_, gravel, _) = self.gravel.run(self.rng.noise() * 0.4 + crackle, 2500.0, 0.8, rate);
             let gravel = gravel * self.rough * (v / 15.0).min(1.0) * 0.4;
 
@@ -439,7 +448,8 @@ impl Synth {
 
             // Chocs : bruit sourd de tole et coup grave.
             self.impact *= 1.0 - 9.0 * dt;
-            let hit = self.impact_lp.run(self.rng.noise(), 700.0, rate) * self.impact * 1.6 + (self.time * TAU * 48.0).sin() * self.impact * 0.5;
+            let hit = self.impact_lp.run(self.rng.noise(), 700.0, rate) * self.impact * 1.6
+                + (self.time * TAU * 48.0).sin() * self.impact * 0.5;
 
             let shared = engine + shift + gravel + squeal + hit;
             let (mut cl, mut cr) = (shared + road_l + wl * wind_amp, shared + road_r + wr * wind_amp);
@@ -513,7 +523,9 @@ impl Synth {
             if self.horn > 0.0 {
                 self.horn -= dt * 2.0;
                 self.horn_phase = (self.horn_phase + 415.0 * dt).fract();
-                let tone = ((self.horn_phase * TAU).sin() + 0.6 * (self.horn_phase * TAU * 1.26).sin()) * self.horn.min(0.2) * 5.0;
+                let tone = ((self.horn_phase * TAU).sin() + 0.6 * (self.horn_phase * TAU * 1.26).sin())
+                    * self.horn.min(0.2)
+                    * 5.0;
                 l += tone * 0.015 * p.city * outside;
                 r += tone * 0.01 * p.city * outside;
             }
@@ -616,7 +628,11 @@ impl Output {
         Some(Self { shared, _stream: stream })
     }
 
-    fn build<T>(device: &cpal::Device, config: &cpal::StreamConfig, shared: Arc<Mutex<SoundParams>>) -> Option<cpal::Stream>
+    fn build<T>(
+        device: &cpal::Device,
+        config: &cpal::StreamConfig,
+        shared: Arc<Mutex<SoundParams>>,
+    ) -> Option<cpal::Stream>
     where
         T: cpal::SizedSample + cpal::FromSample<f32>,
     {
@@ -624,6 +640,7 @@ impl Output {
         let channels = config.channels as usize;
         let mut synth = Synth::new(config.sample_rate as f32);
         let mut buffer: Vec<f32> = Vec::new();
+        let reported = std::sync::atomic::AtomicBool::new(false);
         device
             .build_output_stream(
                 config,
@@ -638,16 +655,20 @@ impl Output {
                         *d = T::from_sample(*s);
                     }
                 },
-                |e| eprintln!("son : {e}"),
+                move |e| {
+                    // Un peripherique en defaut rappelle a chaque tampon : la premiere erreur suffit.
+                    if !reported.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        eprintln!("son : {e} (les erreurs suivantes ne sont plus affichees)");
+                    }
+                },
                 None,
             )
             .ok()
     }
 
+    /// Transmet les reglages au thread audio, qui les prendra a son prochain tampon.
     pub fn set(&self, params: SoundParams) {
-        if let Ok(mut p) = self.shared.lock() {
-            *p = params;
-        }
+        *crate::sync::lock(&self.shared) = params;
     }
 }
 
@@ -691,7 +712,18 @@ mod tests {
     #[test]
     fn ambiences_play_and_stay_bounded() {
         let mut s = Synth::new(48_000.0);
-        s.set(SoundParams { wind: 1.0, rush: 200.0, leaves: 1.0, birds: 1.0, insects: 1.0, waves: 1.0, stream: 1.0, city: 1.0, impact: (1, 30.0), ..Default::default() });
+        s.set(SoundParams {
+            wind: 1.0,
+            rush: 200.0,
+            leaves: 1.0,
+            birds: 1.0,
+            insects: 1.0,
+            waves: 1.0,
+            stream: 1.0,
+            city: 1.0,
+            impact: (1, 30.0),
+            ..Default::default()
+        });
         let out = render(&mut s, 6.0);
         let level = rms(&out[96_000..]);
         assert!(level > 0.02, "{level}");
@@ -702,7 +734,18 @@ mod tests {
     fn the_synth_costs_a_few_percent_of_a_core() {
         let car = CarSound { rpm: 5000.0, load: 1.0, gear: 3, speed: 30.0, slip: 0.5, rough: 0.3, cockpit: true };
         let mut s = Synth::new(48_000.0);
-        s.set(SoundParams { car: Some(car), wind: 1.0, rush: 0.0, leaves: 1.0, birds: 1.0, insects: 1.0, waves: 1.0, stream: 1.0, city: 1.0, ..Default::default() });
+        s.set(SoundParams {
+            car: Some(car),
+            wind: 1.0,
+            rush: 0.0,
+            leaves: 1.0,
+            birds: 1.0,
+            insects: 1.0,
+            waves: 1.0,
+            stream: 1.0,
+            city: 1.0,
+            ..Default::default()
+        });
         // Le meilleur de trois mesures : les autres tests chargent les coeurs en meme temps.
         let cost = (0..3)
             .map(|_| {
@@ -758,10 +801,32 @@ mod tests {
                 t += 1.0 / 60.0;
             }
         }
-        play(&mut s, SoundParams { car: Some(CarSound { rpm: 3500.0, load: 0.6, gear: 2, speed: 15.0, slip: 0.9, ..Default::default() }), ..quiet }, 2.0, &mut out);
-        play(&mut s, SoundParams { car: Some(CarSound { rpm: 1500.0, load: 0.0, gear: 2, speed: 8.0, ..Default::default() }), impact: (1, 14.0), ..quiet }, 1.5, &mut out);
+        play(
+            &mut s,
+            SoundParams {
+                car: Some(CarSound { rpm: 3500.0, load: 0.6, gear: 2, speed: 15.0, slip: 0.9, ..Default::default() }),
+                ..quiet
+            },
+            2.0,
+            &mut out,
+        );
+        play(
+            &mut s,
+            SoundParams {
+                car: Some(CarSound { rpm: 1500.0, load: 0.0, gear: 2, speed: 8.0, ..Default::default() }),
+                impact: (1, 14.0),
+                ..quiet
+            },
+            1.5,
+            &mut out,
+        );
         play(&mut s, quiet, 1.0, &mut out);
-        play(&mut s, SoundParams { wind: 0.4, leaves: 1.0, birds: 1.0, stream: 0.5, ..Default::default() }, 8.0, &mut out);
+        play(
+            &mut s,
+            SoundParams { wind: 0.4, leaves: 1.0, birds: 1.0, stream: 0.5, ..Default::default() },
+            8.0,
+            &mut out,
+        );
         play(&mut s, SoundParams { wind: 0.2, insects: 1.0, leaves: 0.3, ..Default::default() }, 6.0, &mut out);
         play(&mut s, SoundParams { wind: 0.6, waves: 1.0, ..Default::default() }, 8.0, &mut out);
         play(&mut s, SoundParams { wind: 0.2, city: 1.0, birds: 0.2, ..Default::default() }, 6.0, &mut out);

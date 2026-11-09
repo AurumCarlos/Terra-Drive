@@ -57,6 +57,7 @@ pub const WHEELS: [Vec3; 4] = [
 
 /// Le volant : centre et axe de la colonne (vers le conducteur).
 pub const STEERING_CENTER: Vec3 = Vec3::new(-0.37, 0.92, 0.40);
+/// Axe de la colonne de direction, autour duquel tourne le volant.
 pub fn steering_axis() -> Vec3 {
     Vec3::new(0.0, 0.42, -0.9).normalize()
 }
@@ -138,14 +139,32 @@ impl B {
 
     /// Surface en grille : rangees de points, colonnes eventuellement refermees. Normales lissees,
     /// orientees par `out` (une direction vers l'exterieur en chaque point).
-    fn grid(&mut self, rows: &[Vec<Vec3>], wrap: bool, out: &dyn Fn(Vec3) -> Vec3, style: &dyn Fn(usize, usize, Vec3) -> ([f32; 2], Paint)) {
+    fn grid(
+        &mut self,
+        rows: &[Vec<Vec3>],
+        wrap: bool,
+        out: &dyn Fn(Vec3) -> Vec3,
+        style: &dyn Fn(usize, usize, Vec3) -> ([f32; 2], Paint),
+    ) {
         let (nr, nc) = (rows.len(), rows[0].len());
         let base = self.v.len() as u32;
         for r in 0..nr {
             for c in 0..nc {
                 let p = rows[r][c];
-                let cm = if c > 0 { c - 1 } else if wrap { nc - 1 } else { c };
-                let cp = if c + 1 < nc { c + 1 } else if wrap { 0 } else { c };
+                let cm = if c > 0 {
+                    c - 1
+                } else if wrap {
+                    nc - 1
+                } else {
+                    c
+                };
+                let cp = if c + 1 < nc {
+                    c + 1
+                } else if wrap {
+                    0
+                } else {
+                    c
+                };
                 let (rm, rp) = (r.saturating_sub(1), (r + 1).min(nr - 1));
                 let du = rows[r][cp] - rows[r][cm];
                 let dv = rows[rp][c] - rows[rm][c];
@@ -195,7 +214,11 @@ impl B {
                 (0..nv)
                     .map(|j| {
                         let v = -PI + TAU * j as f32 / nv as f32;
-                        let p = Vec3::new(radii.x * f(u.cos(), e) * f(v.cos(), e), radii.y * f(u.sin(), e), radii.z * f(u.cos(), e) * f(v.sin(), e));
+                        let p = Vec3::new(
+                            radii.x * f(u.cos(), e) * f(v.cos(), e),
+                            radii.y * f(u.sin(), e),
+                            radii.z * f(u.cos(), e) * f(v.sin(), e),
+                        );
                         center + rot * p
                     })
                     .collect()
@@ -205,7 +228,14 @@ impl B {
     }
 
     /// Volume de revolution : profil (rayon, position sur l'axe), autour de `axis` passant par `center`.
-    fn revolve(&mut self, center: Vec3, axis: Vec3, profile: &[(f32, f32)], segs: usize, style: &dyn Fn(usize, f32, f32, f32) -> ([f32; 2], Paint)) {
+    fn revolve(
+        &mut self,
+        center: Vec3,
+        axis: Vec3,
+        profile: &[(f32, f32)],
+        segs: usize,
+        style: &dyn Fn(usize, f32, f32, f32) -> ([f32; 2], Paint),
+    ) {
         let axis = axis.normalize();
         let e1 = axis.any_orthonormal_vector();
         let e2 = axis.cross(e1);
@@ -240,7 +270,14 @@ impl B {
 
     /// Boite orientee (centre, demi-tailles, rotation), faces plates.
     fn cube(&mut self, c: Vec3, h: Vec3, rot: Mat3, pt: Paint, uv: [f32; 2]) {
-        for (n, u, v) in [(Vec3::X, Vec3::Y, Vec3::Z), (-Vec3::X, Vec3::Z, Vec3::Y), (Vec3::Y, Vec3::Z, Vec3::X), (-Vec3::Y, Vec3::X, Vec3::Z), (Vec3::Z, Vec3::X, Vec3::Y), (-Vec3::Z, Vec3::Y, Vec3::X)] {
+        for (n, u, v) in [
+            (Vec3::X, Vec3::Y, Vec3::Z),
+            (-Vec3::X, Vec3::Z, Vec3::Y),
+            (Vec3::Y, Vec3::Z, Vec3::X),
+            (-Vec3::Y, Vec3::X, Vec3::Z),
+            (Vec3::Z, Vec3::X, Vec3::Y),
+            (-Vec3::Z, Vec3::Y, Vec3::X),
+        ] {
             let (n, u, v) = (n * h, u * h, v * h);
             let pts = [c + rot * (n - u - v), c + rot * (n + u - v), c + rot * (n + u + v), c + rot * (n - u + v)];
             self.fan(&pts, rot * n.normalize(), &|_| (uv, pt));
@@ -260,7 +297,8 @@ fn curve(keys: &[(f32, f32)], z: f32) -> f32 {
     if z >= keys[n - 1].0 {
         return keys[n - 1].1;
     }
-    let k = keys.windows(2).position(|w| z <= w[1].0).unwrap();
+    // `z` est strictement entre la premiere et la derniere cle : un intervalle le contient.
+    let k = keys.windows(2).position(|w| z <= w[1].0).unwrap_or(n - 2);
     let slope = |i: usize| (keys[i + 1].1 - keys[i].1) / (keys[i + 1].0 - keys[i].0);
     let tangent = |i: usize| {
         if i == 0 {
@@ -269,7 +307,11 @@ fn curve(keys: &[(f32, f32)], z: f32) -> f32 {
             slope(n - 2)
         } else {
             let (a, b) = (slope(i - 1), slope(i));
-            if a * b <= 0.0 { 0.0 } else { 2.0 / (1.0 / a + 1.0 / b) }
+            if a * b <= 0.0 {
+                0.0
+            } else {
+                2.0 / (1.0 / a + 1.0 / b)
+            }
         }
     };
     let (z0, z1) = (keys[k].0, keys[k + 1].0);
@@ -306,11 +348,42 @@ const TOP: [(f32, f32); 16] = [
     (HALF, 0.53),
 ];
 /// Ligne de caisse (bas des vitres) ; sur le capot et le coffre, la carrosserie s'y bombe.
-const BELT: [(f32, f32); 11] = [(-HALF, 0.78), (-2.25, 0.90), (-2.12, 0.965), (-1.75, 0.99), (-1.0, 0.985), (0.0, 0.955), (0.95, 0.905), (1.1, 0.875), (1.8, 0.775), (2.2, 0.66), (HALF, 0.52)];
+const BELT: [(f32, f32); 11] = [
+    (-HALF, 0.78),
+    (-2.25, 0.90),
+    (-2.12, 0.965),
+    (-1.75, 0.99),
+    (-1.0, 0.985),
+    (0.0, 0.955),
+    (0.95, 0.905),
+    (1.1, 0.875),
+    (1.8, 0.775),
+    (2.2, 0.66),
+    (HALF, 0.52),
+];
 /// Demi-largeur.
-const WIDTH: [(f32, f32); 9] = [(-HALF, 0.74), (-2.26, 0.84), (-2.08, 0.905), (-1.6, 0.925), (0.0, 0.925), (1.6, 0.92), (2.05, 0.885), (2.22, 0.80), (HALF, 0.66)];
+const WIDTH: [(f32, f32); 9] = [
+    (-HALF, 0.74),
+    (-2.26, 0.84),
+    (-2.08, 0.905),
+    (-1.6, 0.925),
+    (0.0, 0.925),
+    (1.6, 0.92),
+    (2.05, 0.885),
+    (2.22, 0.80),
+    (HALF, 0.66),
+];
 /// Bas de caisse.
-const BOTTOM: [(f32, f32); 8] = [(-HALF, 0.40), (-2.25, 0.31), (-2.0, 0.235), (-1.8, 0.185), (1.8, 0.185), (2.1, 0.22), (2.25, 0.265), (HALF, 0.33)];
+const BOTTOM: [(f32, f32); 8] = [
+    (-HALF, 0.40),
+    (-2.25, 0.31),
+    (-2.0, 0.235),
+    (-1.8, 0.185),
+    (1.8, 0.185),
+    (2.1, 0.22),
+    (2.25, 0.265),
+    (HALF, 0.33),
+];
 /// Parametre t des points de la demi-section (0 dessous, 0.5 ligne de caisse, 1 sommet).
 const T: [f32; 12] = [0.0, 0.08, 0.12, 0.18, 0.26, 0.36, 0.44, 0.5, 0.62, 0.74, 0.87, 1.0];
 
@@ -357,7 +430,10 @@ fn half_section(z: f32) -> Vec<(f32, f32, f32)> {
                 let q = |i: usize| p[i.clamp(3, 11)];
                 let (a0, a1, a2, a3) = (q(k - 1), q(k), q(k + 1), q(k + 2));
                 let cr = |c0: f32, c1: f32, c2: f32, c3: f32| {
-                    0.5 * (2.0 * c1 + (-c0 + c2) * u + (2.0 * c0 - 5.0 * c1 + 4.0 * c2 - c3) * u * u + (-c0 + 3.0 * c1 - 3.0 * c2 + c3) * u * u * u)
+                    0.5 * (2.0 * c1
+                        + (-c0 + c2) * u
+                        + (2.0 * c0 - 5.0 * c1 + 4.0 * c2 - c3) * u * u
+                        + (-c0 + 3.0 * c1 - 3.0 * c2 + c3) * u * u * u)
                 };
                 (cr(a0.0, a1.0, a2.0, a3.0), cr(a0.1, a1.1, a2.1, a3.1))
             };
@@ -389,7 +465,7 @@ fn body(b: &mut B) {
     let ts2 = ts.clone();
     b.grid(&rows, true, &|p| Vec3::new(p.x, p.y - 0.65, p.z * 0.25), &|_, c, p| ([p.z, ts2[c]], pt));
     // Les deux bouts : le bouclier avant et la jupe arriere.
-    for (row, n) in [(rows.last().unwrap().clone(), Vec3::Z), (rows[0].clone(), -Vec3::Z)] {
+    for (row, n) in [(rows[rows.len() - 1].clone(), Vec3::Z), (rows[0].clone(), -Vec3::Z)] {
         let c = row.iter().copied().sum::<Vec3>() / row.len() as f32;
         let base = b.v.len() as u32;
         b.push(c, n, [c.z, 0.3], pt);
@@ -450,10 +526,18 @@ fn wheel(b: &mut B, index: usize) {
         let along = (0.07 + 0.225) * 0.5;
         let rot = Mat3::from_cols(Vec3::X, dir, Vec3::X.cross(dir));
         let c = dir * along + axis * 0.083;
-        b.cube(c, Vec3::new(0.014, 0.078, 0.013), rot * Mat3::from_rotation_x(if k % 2 == 1 { -0.12 } else { 0.12 }), rim, [0.0, along]);
+        b.cube(
+            c,
+            Vec3::new(0.014, 0.078, 0.013),
+            rot * Mat3::from_rotation_x(if k % 2 == 1 { -0.12 } else { 0.12 }),
+            rim,
+            [0.0, along],
+        );
     }
     let hub: [(f32, f32); 4] = [(0.0, 0.092), (0.035, 0.092), (0.078, 0.084), (0.08, 0.05)];
-    b.revolve(Vec3::ZERO, axis, &hub, 36, &|r, t, rad, _| ([t, rad], if r < 2 { paint([0.05, 0.05, 0.055], mat::CHROME, 3) } else { rim }));
+    b.revolve(Vec3::ZERO, axis, &hub, 36, &|r, t, rad, _| {
+        ([t, rad], if r < 2 { paint([0.05, 0.05, 0.055], mat::CHROME, 3) } else { rim })
+    });
     for k in 0..5 {
         let a = TAU * k as f32 / 5.0 + 0.3;
         let c = Vec3::new(0.0, a.cos() * 0.055, a.sin() * 0.055);
@@ -461,7 +545,8 @@ fn wheel(b: &mut B, index: usize) {
         b.revolve(c, axis, &nut, 6, &|_, t, rad, _| ([t, rad], paint([0.7, 0.7, 0.72], mat::CHROME, 0)));
     }
     // Disque de frein ventile.
-    let disc: [(f32, f32); 6] = [(0.09, 0.012), (0.19, 0.012), (0.192, 0.0), (0.19, -0.012), (0.09, -0.012), (0.088, 0.0)];
+    let disc: [(f32, f32); 6] =
+        [(0.09, 0.012), (0.19, 0.012), (0.192, 0.0), (0.19, -0.012), (0.09, -0.012), (0.088, 0.0)];
     b.revolve(Vec3::ZERO, axis, &disc, 48, &|_, t, rad, _| ([t, rad], paint([0.3, 0.29, 0.28], mat::CHROME, 2)));
     b.end(Part::Wheel(index), start);
 
@@ -491,27 +576,45 @@ fn exterior(b: &mut B) {
         b.blob(shell, Vec3::new(0.13, 0.075, 0.07), 0.45, Mat3::from_rotation_y(s * 0.12), body, [0.74, 0.3]);
         let glass = Vec3::new(s * 1.0, 1.0, 0.668);
         b.fan(
-            &[glass + Vec3::new(-0.115, -0.06, 0.0), glass + Vec3::new(0.115, -0.06, 0.0), glass + Vec3::new(0.115, 0.06, 0.0), glass + Vec3::new(-0.115, 0.06, 0.0)],
+            &[
+                glass + Vec3::new(-0.115, -0.06, 0.0),
+                glass + Vec3::new(0.115, -0.06, 0.0),
+                glass + Vec3::new(0.115, 0.06, 0.0),
+                glass + Vec3::new(-0.115, 0.06, 0.0),
+            ],
             -Vec3::Z,
             &|_| ([0.0, 0.0], paint([0.35, 0.37, 0.4], mat::GLASS, 0)),
         );
         // Echappement : deux sorties ovales en inox.
         let tip = Vec3::new(s * 0.52, 0.29, -HALF + 0.02);
         let pipe: [(f32, f32); 5] = [(0.0, -0.02), (0.035, -0.02), (0.045, 0.0), (0.045, 0.12), (0.038, 0.12)];
-        b.revolve(tip, Vec3::Z, &pipe, 20, &|r, t, rad, _| ([t, rad], if r < 2 { black } else { paint([0.75, 0.74, 0.72], mat::CHROME, 0) }));
+        b.revolve(tip, Vec3::Z, &pipe, 20, &|r, t, rad, _| {
+            ([t, rad], if r < 2 { black } else { paint([0.75, 0.74, 0.72], mat::CHROME, 0) })
+        });
     }
     // Essuie-glaces au pied du pare-brise.
     for (x0, x1) in [(-0.72, 0.02), (0.06, 0.62)] {
         let a = Vec3::new(x0, 0.935, 0.93);
         let c = Vec3::new(x1, 0.975, 0.86);
         let d = (c - a).normalize();
-        let rot = Mat3::from_cols(d, d.cross(Vec3::new(0.0, 0.45, 0.9).normalize()).normalize(), Vec3::new(0.0, 0.45, 0.9).normalize());
+        let rot = Mat3::from_cols(
+            d,
+            d.cross(Vec3::new(0.0, 0.45, 0.9).normalize()).normalize(),
+            Vec3::new(0.0, 0.45, 0.9).normalize(),
+        );
         b.cube((a + c) * 0.5, Vec3::new((c - a).length() * 0.5, 0.008, 0.006), rot, matte, [0.0, 0.0]);
     }
     // Antenne en aileron de requin.
     b.blob(Vec3::new(0.0, 1.38, -0.92), Vec3::new(0.03, 0.06, 0.1), 0.8, Mat3::IDENTITY, body, [0.0, 0.3]);
     // Becquet sur le bord du coffre.
-    b.blob(Vec3::new(0.0, 1.02, -2.2), Vec3::new(0.68, 0.018, 0.06), 0.3, Mat3::from_rotation_x(-0.15), body, [-2.2, 0.3]);
+    b.blob(
+        Vec3::new(0.0, 1.02, -2.2),
+        Vec3::new(0.68, 0.018, 0.06),
+        0.3,
+        Mat3::from_rotation_x(-0.15),
+        body,
+        [-2.2, 0.3],
+    );
     // Lame d'aero sous le bouclier avant.
     b.blob(Vec3::new(0.0, 0.17, 2.18), Vec3::new(0.72, 0.012, 0.09), 0.25, Mat3::IDENTITY, black, [0.0, 0.0]);
     b.end(Part::Body, start);
@@ -527,7 +630,16 @@ fn cabin(b: &mut B) {
     let alu = paint([0.5, 0.5, 0.52], mat::CABIN, 5);
     let start = b.begin();
     // Plancher.
-    b.fan(&[Vec3::new(-0.82, 0.24, -1.7), Vec3::new(0.82, 0.24, -1.7), Vec3::new(0.82, 0.24, 0.95), Vec3::new(-0.82, 0.24, 0.95)], Vec3::Y, &|p| ([p.x, p.z], carpet));
+    b.fan(
+        &[
+            Vec3::new(-0.82, 0.24, -1.7),
+            Vec3::new(0.82, 0.24, -1.7),
+            Vec3::new(0.82, 0.24, 0.95),
+            Vec3::new(-0.82, 0.24, 0.95),
+        ],
+        Vec3::Y,
+        &|p| ([p.x, p.z], carpet),
+    );
     // Planche de bord, casquette des compteurs, bandeau alu.
     b.blob(Vec3::new(0.0, 0.84, 0.82), Vec3::new(0.86, 0.15, 0.24), 0.28, Mat3::IDENTITY, plastic, [0.0, 0.0]);
     b.blob(Vec3::new(-0.37, 1.0, 0.6), Vec3::new(0.21, 0.025, 0.1), 0.4, Mat3::IDENTITY, plastic, [0.0, 0.0]);
@@ -554,28 +666,87 @@ fn cabin(b: &mut B) {
     for s in [-1.0f32, 1.0] {
         let x = s * 0.37;
         b.blob(Vec3::new(x, 0.42, -0.12), Vec3::new(0.25, 0.075, 0.26), 0.35, Mat3::IDENTITY, leather, [0.0, 0.0]);
-        b.blob(Vec3::new(x - s * 0.2, 0.5, -0.12), Vec3::new(0.05, 0.09, 0.25), 0.5, Mat3::IDENTITY, leather, [0.0, 0.0]);
-        b.blob(Vec3::new(x + s * 0.2, 0.5, -0.12), Vec3::new(0.05, 0.09, 0.25), 0.5, Mat3::IDENTITY, leather, [0.0, 0.0]);
-        b.blob(Vec3::new(x, 0.78, -0.43), Vec3::new(0.25, 0.33, 0.075), 0.35, Mat3::from_rotation_x(-0.2), leather, [0.0, 0.0]);
-        b.blob(Vec3::new(x, 1.17, -0.53), Vec3::new(0.13, 0.09, 0.05), 0.4, Mat3::from_rotation_x(-0.15), leather, [0.0, 0.0]);
-        b.blob(Vec3::new(s * 0.36, 1.03, -1.36), Vec3::new(0.12, 0.08, 0.045), 0.4, Mat3::from_rotation_x(-0.25), leather, [0.0, 0.0]);
+        b.blob(
+            Vec3::new(x - s * 0.2, 0.5, -0.12),
+            Vec3::new(0.05, 0.09, 0.25),
+            0.5,
+            Mat3::IDENTITY,
+            leather,
+            [0.0, 0.0],
+        );
+        b.blob(
+            Vec3::new(x + s * 0.2, 0.5, -0.12),
+            Vec3::new(0.05, 0.09, 0.25),
+            0.5,
+            Mat3::IDENTITY,
+            leather,
+            [0.0, 0.0],
+        );
+        b.blob(
+            Vec3::new(x, 0.78, -0.43),
+            Vec3::new(0.25, 0.33, 0.075),
+            0.35,
+            Mat3::from_rotation_x(-0.2),
+            leather,
+            [0.0, 0.0],
+        );
+        b.blob(
+            Vec3::new(x, 1.17, -0.53),
+            Vec3::new(0.13, 0.09, 0.05),
+            0.4,
+            Mat3::from_rotation_x(-0.15),
+            leather,
+            [0.0, 0.0],
+        );
+        b.blob(
+            Vec3::new(s * 0.36, 1.03, -1.36),
+            Vec3::new(0.12, 0.08, 0.045),
+            0.4,
+            Mat3::from_rotation_x(-0.25),
+            leather,
+            [0.0, 0.0],
+        );
     }
     b.blob(Vec3::new(0.0, 0.43, -1.1), Vec3::new(0.66, 0.08, 0.26), 0.3, Mat3::IDENTITY, leather, [0.0, 0.0]);
-    b.blob(Vec3::new(0.0, 0.76, -1.38), Vec3::new(0.66, 0.3, 0.075), 0.3, Mat3::from_rotation_x(-0.25), leather, [0.0, 0.0]);
+    b.blob(
+        Vec3::new(0.0, 0.76, -1.38),
+        Vec3::new(0.66, 0.3, 0.075),
+        0.3,
+        Mat3::from_rotation_x(-0.25),
+        leather,
+        [0.0, 0.0],
+    );
     // Plage arriere, retroviseur interieur.
-    b.fan(&[Vec3::new(-0.74, 1.0, -1.5), Vec3::new(0.74, 1.0, -1.5), Vec3::new(0.7, 1.0, -1.78), Vec3::new(-0.7, 1.0, -1.78)], Vec3::Y, &|p| ([p.x, p.z], carpet));
+    b.fan(
+        &[
+            Vec3::new(-0.74, 1.0, -1.5),
+            Vec3::new(0.74, 1.0, -1.5),
+            Vec3::new(0.7, 1.0, -1.78),
+            Vec3::new(-0.7, 1.0, -1.78),
+        ],
+        Vec3::Y,
+        &|p| ([p.x, p.z], carpet),
+    );
     b.blob(Vec3::new(0.0, 1.29, 0.12), Vec3::new(0.12, 0.035, 0.015), 0.4, Mat3::IDENTITY, plastic, [0.0, 0.0]);
     // Colonne de direction.
     let axis = steering_axis();
-    b.revolve(STEERING_CENTER + axis * 0.06, -axis, &[(0.0, 0.0), (0.04, 0.0), (0.045, 0.25), (0.0, 0.25)], 16, &|_, _, _, _| ([0.0, 0.0], plastic));
+    b.revolve(
+        STEERING_CENTER + axis * 0.06,
+        -axis,
+        &[(0.0, 0.0), (0.04, 0.0), (0.045, 0.25), (0.0, 0.25)],
+        16,
+        &|_, _, _, _| ([0.0, 0.0], plastic),
+    );
     b.end(Part::Body, start);
 
     // Volant : jante gainee, trois branches, coussin central.
     let start = b.begin();
-    let rim: Vec<(f32, f32)> = (0..=12).map(|k| {
-        let a = TAU * k as f32 / 12.0;
-        (0.185 + 0.021 * a.cos(), 0.021 * a.sin())
-    }).collect();
+    let rim: Vec<(f32, f32)> = (0..=12)
+        .map(|k| {
+            let a = TAU * k as f32 / 12.0;
+            (0.185 + 0.021 * a.cos(), 0.021 * a.sin())
+        })
+        .collect();
     b.revolve(Vec3::ZERO, axis, &rim, 48, &|_, _, _, _| ([0.0, 0.0], leather));
     let e1 = Vec3::X;
     let e2 = axis.cross(e1).normalize();

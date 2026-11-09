@@ -84,18 +84,20 @@ impl Builder {
         let count = branches * 2;
         let at = |k: u32| {
             let a = turn + k as f32 / count as f32 * std::f32::consts::TAU;
-            let (radius, y) = if k % 2 == 0 { (r, y0) } else { (r * 0.5, y0 + (y1 - y0) * 0.16) };
+            let (radius, y) = if k.is_multiple_of(2) { (r, y0) } else { (r * 0.5, y0 + (y1 - y0) * 0.16) };
             Vec3::new(a.cos() * radius, y, a.sin() * radius)
         };
         let tilt = r / (y1 - y0);
-        let normal = |p: Vec3| Vec3::new(p.x, 0.0, p.z).normalize_or_zero().lerp(Vec3::Y * tilt.min(1.0), 0.35).normalize_or_zero();
+        let normal = |p: Vec3| {
+            Vec3::new(p.x, 0.0, p.z).normalize_or_zero().lerp(Vec3::Y * tilt.min(1.0), 0.35).normalize_or_zero()
+        };
         let apex = Vec3::new(0.0, y1, 0.0);
         let (tip, notch, top) = (color.map(|c| c * 1.25), color.map(|c| c * 0.55), color.map(|c| c * 0.9));
         let under = color.map(|c| c * 0.28);
         let center = Vec3::new(0.0, y0 + (y1 - y0) * 0.22, 0.0);
         for k in 0..count {
             let (a, c) = (at(k), at(k + 1));
-            let shade = |p: u32| if p % 2 == 0 { tip } else { notch };
+            let shade = |p: u32| if p.is_multiple_of(2) { tip } else { notch };
             self.smooth_tri([a, c, apex], [normal(a), normal(c), Vec3::Y], [shade(k), shade(k + 1), top], sway);
             self.smooth_tri([a, c, center], [Vec3::NEG_Y; 3], [under; 3], sway);
         }
@@ -105,15 +107,41 @@ impl Builder {
     fn blob(&mut self, c: Vec3, r: Vec3, subdiv: u32, jitter: f32, seed: u64, color: [f32; 3], sway: f32) {
         let t = (1.0 + 5f32.sqrt()) * 0.5;
         let v = [
-            Vec3::new(-1.0, t, 0.0), Vec3::new(1.0, t, 0.0), Vec3::new(-1.0, -t, 0.0), Vec3::new(1.0, -t, 0.0),
-            Vec3::new(0.0, -1.0, t), Vec3::new(0.0, 1.0, t), Vec3::new(0.0, -1.0, -t), Vec3::new(0.0, 1.0, -t),
-            Vec3::new(t, 0.0, -1.0), Vec3::new(t, 0.0, 1.0), Vec3::new(-t, 0.0, -1.0), Vec3::new(-t, 0.0, 1.0),
+            Vec3::new(-1.0, t, 0.0),
+            Vec3::new(1.0, t, 0.0),
+            Vec3::new(-1.0, -t, 0.0),
+            Vec3::new(1.0, -t, 0.0),
+            Vec3::new(0.0, -1.0, t),
+            Vec3::new(0.0, 1.0, t),
+            Vec3::new(0.0, -1.0, -t),
+            Vec3::new(0.0, 1.0, -t),
+            Vec3::new(t, 0.0, -1.0),
+            Vec3::new(t, 0.0, 1.0),
+            Vec3::new(-t, 0.0, -1.0),
+            Vec3::new(-t, 0.0, 1.0),
         ]
         .map(|p| p.normalize());
         const F: [[usize; 3]; 20] = [
-            [0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11], [1, 5, 9], [5, 11, 4], [11, 10, 2],
-            [10, 7, 6], [7, 1, 8], [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9], [4, 9, 5],
-            [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1],
+            [0, 11, 5],
+            [0, 5, 1],
+            [0, 1, 7],
+            [0, 7, 10],
+            [0, 10, 11],
+            [1, 5, 9],
+            [5, 11, 4],
+            [11, 10, 2],
+            [10, 7, 6],
+            [7, 1, 8],
+            [3, 9, 4],
+            [3, 4, 2],
+            [3, 2, 6],
+            [3, 6, 8],
+            [3, 8, 9],
+            [4, 9, 5],
+            [2, 4, 11],
+            [6, 2, 10],
+            [8, 6, 7],
+            [9, 8, 1],
         ];
         // Les rochers gardent leurs facettes.
         let facet = if sway > 0.0 { 0.0 } else { 0.85 };
@@ -143,9 +171,15 @@ impl Builder {
             if flat.dot((pa + pb + pc) / 3.0 - c) < 0.0 {
                 flat = -flat;
             }
-            let normal = |p: Vec3| (((p - c) / r).normalize_or_zero() * (1.0 - facet) + flat * facet).normalize_or_zero();
+            let normal =
+                |p: Vec3| (((p - c) / r).normalize_or_zero() * (1.0 - facet) + flat * facet).normalize_or_zero();
             let shade = |p: Vec3| color.map(|v| v * (0.6 + 0.62 * height(p)));
-            self.smooth_tri([pa, pb, pc], [normal(pa), normal(pb), normal(pc)], [shade(pa), shade(pb), shade(pc)], sway);
+            self.smooth_tri(
+                [pa, pb, pc],
+                [normal(pa), normal(pb), normal(pc)],
+                [shade(pa), shade(pb), shade(pc)],
+                sway,
+            );
         }
     }
 
@@ -305,7 +339,12 @@ fn flower(b: &mut Builder, lod: u8) {
     for i in 0..petals {
         let a = i as f32 / petals as f32 * std::f32::consts::TAU;
         let (dir, side) = (Vec3::new(a.cos(), 0.1, a.sin()), Vec3::new(-a.sin(), 0.0, a.cos()));
-        b.smooth_tri([head, head + dir * 0.09 + side * 0.04, head + dir * 0.09 - side * 0.04], [up; 3], [white; 3], 0.8);
+        b.smooth_tri(
+            [head, head + dir * 0.09 + side * 0.04, head + dir * 0.09 - side * 0.04],
+            [up; 3],
+            [white; 3],
+            0.8,
+        );
     }
     if lod == 0 {
         // Tige : la couleur sombre attenue la teinte de la fleur.
@@ -429,11 +468,13 @@ pub struct ObjectMeshes {
     pub ranges: [[Range<u32>; 3]; KIND_COUNT],
 }
 
+/// Maillages des arbres, rochers et herbes, dans l'ordre de `Kind` : construits une fois au demarrage.
 pub fn build_object_meshes() -> ObjectMeshes {
     let mut vertices = Vec::new();
     let mut b = Builder::default();
     // Dans l'ordre de `Kind`.
-    let builders: [fn(&mut Builder, u8); KIND_COUNT] = [pine, oak, bush, cactus, rock, grass, flower, birch, palm, tall_grass, acacia];
+    let builders: [fn(&mut Builder, u8); KIND_COUNT] =
+        [pine, oak, bush, cactus, rock, grass, flower, birch, palm, tall_grass, acacia];
     let ranges = builders.map(|f| {
         [0, 1, 2].map(|lod| {
             f(&mut b, lod);

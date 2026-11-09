@@ -3,7 +3,7 @@
 
 use super::chunk::{encode_color, NodeId};
 use super::city::{City, Ground};
-use super::generator::{smoothstep, Biome, Generator, planet_radius};
+use super::generator::{planet_radius, smoothstep, Biome, Generator};
 use super::noise::{hash_seed, Rng};
 use bytemuck::{Pod, Zeroable};
 use glam::DVec3;
@@ -87,13 +87,27 @@ fn cell_center(gen: &Generator, cell: NodeId) -> DVec3 {
 /// Villes qui couvrent une cellule.
 fn cities_on(gen: &Generator, cell: NodeId) -> Vec<&City> {
     let dir = cell.center_dir();
-    gen.cities.touching(dir, cell.size()).into_iter().filter(|c| c.dir.dot(dir) > 0.5 && c.extent(c.local(dir)) < 1.3).collect()
+    gen.cities
+        .touching(dir, cell.size())
+        .into_iter()
+        .filter(|c| c.dir.dot(dir) > 0.5 && c.extent(c.local(dir)) < 1.3)
+        .collect()
 }
 
 /// Arbres d'alignement des boulevards qui tombent dans la cellule.
-fn street_trees(gen: &Generator, cell: NodeId, cities: &[&City], center: DVec3, out: &mut Vec<ObjectInstance>, rng: &mut Rng) {
+fn street_trees(
+    gen: &Generator,
+    cell: NodeId,
+    cities: &[&City],
+    center: DVec3,
+    out: &mut Vec<ObjectInstance>,
+    rng: &mut Rng,
+) {
     for city in cities {
-        let corners: Vec<glam::DVec2> = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)].iter().map(|&(s, t)| city.local(cell.dir_at(s, t))).collect();
+        let corners: Vec<glam::DVec2> = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+            .iter()
+            .map(|&(s, t)| city.local(cell.dir_at(s, t)))
+            .collect();
         let lo = corners.iter().fold(glam::DVec2::splat(f64::MAX), |a, b| a.min(*b)) - glam::DVec2::splat(4.0);
         let hi = corners.iter().fold(glam::DVec2::splat(f64::MIN), |a, b| a.max(*b)) + glam::DVec2::splat(4.0);
         for p in city.plan(gen).street_trees(lo, hi) {
@@ -120,6 +134,7 @@ fn street_trees(gen: &Generator, cell: NodeId, cities: &[&City], center: DVec3, 
     }
 }
 
+/// Arbres, buissons et rochers de la cellule `cell`, ranges par type. Deterministe pour une planete.
 pub fn build_trees(gen: &Generator, cell: NodeId) -> CellObjects {
     let mut out: [Vec<ObjectInstance>; KIND_COUNT] = Default::default();
     let mut rng = Rng(cell_seed(gen, 0x7EE5, cell));
@@ -146,9 +161,16 @@ pub fn build_trees(gen: &Generator, cell: NodeId) -> CellObjects {
                 continue;
             }
             let biome = gen.biome(climate);
-            let mut density = gen.tree_cover(biome, gen.woods(dir), climate.temperature) * gen.forest_share(dir, surface.ridge);
+            let mut density =
+                gen.tree_cover(biome, gen.woods(dir), climate.temperature) * gen.forest_share(dir, surface.ridge);
             let mut kind = match biome {
-                Biome::Jungle => if species < 0.22 { Kind::Palm } else { Kind::Oak },
+                Biome::Jungle => {
+                    if species < 0.22 {
+                        Kind::Palm
+                    } else {
+                        Kind::Oak
+                    }
+                }
                 Biome::Forest => {
                     let pines = 0.03 + 0.72 * gen.stand(dir);
                     if species < pines {
@@ -159,7 +181,13 @@ pub fn build_trees(gen: &Generator, cell: NodeId) -> CellObjects {
                         Kind::Oak
                     }
                 }
-                Biome::Taiga => if species < 0.12 { Kind::Birch } else { Kind::Pine },
+                Biome::Taiga => {
+                    if species < 0.12 {
+                        Kind::Birch
+                    } else {
+                        Kind::Pine
+                    }
+                }
                 Biome::Grassland => {
                     if species < 0.5 {
                         Kind::Pine
@@ -169,7 +197,13 @@ pub fn build_trees(gen: &Generator, cell: NodeId) -> CellObjects {
                         Kind::Oak
                     }
                 }
-                Biome::Savanna => if species < 0.82 { Kind::Acacia } else { Kind::Oak },
+                Biome::Savanna => {
+                    if species < 0.82 {
+                        Kind::Acacia
+                    } else {
+                        Kind::Oak
+                    }
+                }
                 Biome::Desert => {
                     density = 0.012;
                     Kind::Cactus
@@ -237,17 +271,18 @@ pub fn build_trees(gen: &Generator, cell: NodeId) -> CellObjects {
             } else {
                 1.0
             };
-            let scale = age * match kind {
-                Kind::Pine => 0.6 + 1.1 * scale_r * scale_r.sqrt(),
-                Kind::Oak => 0.6 + 0.95 * scale_r,
-                Kind::Acacia => 0.7 + 0.6 * scale_r,
-                Kind::Birch => 0.8 + 0.6 * scale_r,
-                Kind::Palm => 0.75 + 0.5 * scale_r,
-                Kind::Bush => 0.6 + 0.8 * scale_r,
-                Kind::Cactus => 0.7 + 0.6 * scale_r,
-                Kind::Rock => 0.4 + 1.6 * scale_r * scale_r,
-                Kind::Grass | Kind::Flower | Kind::TallGrass => 1.0,
-            };
+            let scale = age
+                * match kind {
+                    Kind::Pine => 0.6 + 1.1 * scale_r * scale_r.sqrt(),
+                    Kind::Oak => 0.6 + 0.95 * scale_r,
+                    Kind::Acacia => 0.7 + 0.6 * scale_r,
+                    Kind::Birch => 0.8 + 0.6 * scale_r,
+                    Kind::Palm => 0.75 + 0.5 * scale_r,
+                    Kind::Bush => 0.6 + 0.8 * scale_r,
+                    Kind::Cactus => 0.7 + 0.6 * scale_r,
+                    Kind::Rock => 0.4 + 1.6 * scale_r * scale_r,
+                    Kind::Grass | Kind::Flower | Kind::TallGrass => 1.0,
+                };
             // Chaque arbre a sa nuance, du vert bleute au vert jaune.
             let v = (0.72 + 0.46 * tint_r) * gen.canopy_tone(dir);
             let tint = if kind == Kind::Rock {
@@ -260,7 +295,11 @@ pub fn build_trees(gen: &Generator, cell: NodeId) -> CellObjects {
                 let fall = if matches!(kind, Kind::Oak | Kind::Birch) { gen.autumn(dir, climate) } else { 0.0 };
                 if species * 7.3 % 1.0 < fall * 0.9 {
                     let turned = [3.3, 1.75 - 1.25 * hue, 0.25];
-                    if kind == Kind::Birch { [turned[0] * 0.8, 1.55, 0.2] } else { turned }
+                    if kind == Kind::Birch {
+                        [turned[0] * 0.8, 1.55, 0.2]
+                    } else {
+                        turned
+                    }
                 } else {
                     green
                 }
@@ -286,14 +325,8 @@ pub fn build_trees(gen: &Generator, cell: NodeId) -> CellObjects {
     CellObjects { center, objects: out }
 }
 
-const FLOWER_COLORS: [[f32; 3]; 6] = [
-    [0.95, 0.72, 0.05],
-    [0.9, 0.88, 0.8],
-    [0.42, 0.14, 0.75],
-    [0.85, 0.08, 0.1],
-    [0.12, 0.25, 0.85],
-    [0.9, 0.3, 0.55],
-];
+const FLOWER_COLORS: [[f32; 3]; 6] =
+    [[0.95, 0.72, 0.05], [0.9, 0.88, 0.8], [0.42, 0.14, 0.75], [0.85, 0.08, 0.1], [0.12, 0.25, 0.85], [0.9, 0.3, 0.55]];
 
 /// Touffes d'herbe et fleurs d'une cellule, teintees comme le sol pour s'y fondre.
 pub fn build_grass(gen: &Generator, cell: NodeId) -> GrassCell {
@@ -304,10 +337,7 @@ pub fn build_grass(gen: &Generator, cell: NodeId) -> GrassCell {
     // Le climat ne varie pas a l'echelle d'une cellule.
     let climate = gen.climate(center_dir, gen.height(center_dir));
     let biome = gen.biome(climate);
-    let grows = matches!(
-        biome,
-        Biome::Grassland | Biome::Forest | Biome::Savanna | Biome::Taiga | Biome::Jungle
-    );
+    let grows = matches!(biome, Biome::Grassland | Biome::Forest | Biome::Savanna | Biome::Taiga | Biome::Jungle);
     if !grows || climate.temperature < 0.15 {
         return GrassCell { center, tufts, flowers, stalks };
     }

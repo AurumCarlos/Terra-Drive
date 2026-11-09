@@ -2,10 +2,10 @@
 
 use glam::DVec3;
 use std::path::PathBuf;
-use terra::app::{Context, EngineConfig, Game, GameEvent};
+use terra::app::{Context, EngineConfig, Game, GameEvent, MAX_WINDOW_SIZE, MIN_WINDOW_SIZE};
 use terra::player::{world_lock, PlayerController};
-use terra::world::generator::{lat_lon_to_dir, PlanetParams, planet_radius};
 use terra::vehicle::{parking_spot, Car, View};
+use terra::world::generator::{lat_lon_to_dir, planet_radius, PlanetParams};
 use terra::Camera;
 use winit::keyboard::KeyCode;
 
@@ -160,7 +160,8 @@ impl Explorer {
         }
         let near = self.car.as_ref().is_some_and(|c| (c.position - ctx.camera.position).length() < 12.0);
         if !near {
-            let (at, forward) = self.grid.take().unwrap_or_else(|| parking_spot(ctx.world, ctx.camera.up(), ctx.camera.heading));
+            let (at, forward) =
+                self.grid.take().unwrap_or_else(|| parking_spot(ctx.world, ctx.camera.up(), ctx.camera.heading));
             let mut car = Car::new(ctx.world, at, forward);
             car.palette = (ctx.world.params.seed % 8) as u8;
             if self.options.cockpit {
@@ -238,7 +239,7 @@ impl Game for Explorer {
     }
 
     fn update(&mut self, ctx: &mut Context, dt: f32) {
-        for event in ctx.events.to_vec() {
+        for event in ctx.events.iter().copied() {
             match event {
                 GameEvent::GoToSpace => self.go_to_space(ctx),
                 GameEvent::GoToSurface => self.go_to_surface(ctx),
@@ -313,9 +314,21 @@ impl Game for Explorer {
     }
 }
 
+/// Deux nombres finis separes par une virgule : `48.85,2.35`.
 fn pair(s: &str) -> Option<(f64, f64)> {
     let (a, b) = s.split_once(',')?;
-    Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
+    let (a, b): (f64, f64) = (a.trim().parse().ok()?, b.trim().parse().ok()?);
+    (a.is_finite() && b.is_finite()).then_some((a, b))
+}
+
+/// Un nombre fini compris entre `min` et `max`. Tout le reste (texte, `nan`, `inf`, hors bornes)
+/// est refuse : une valeur absurde ne doit pas etre ignoree en silence ni atteindre la simulation.
+fn number<T>(s: &str, min: T, max: T) -> Option<T>
+where
+    T: std::str::FromStr + PartialOrd,
+{
+    // Les comparaisons sont fausses pour NaN, qui est donc refuse aussi.
+    s.trim().parse::<T>().ok().filter(|v| *v >= min && *v <= max)
 }
 
 fn main() {
@@ -325,33 +338,47 @@ fn main() {
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         let mut value = || args.next().unwrap_or_else(|| usage(&format!("valeur manquante pour {flag}")));
+        // La valeur de l'option, entre ses bornes ; sinon l'aide, avec le rappel de ce qui est attendu.
+        let mut real = |min: f64, max: f64, help: &str| number(&value(), min, max).unwrap_or_else(|| usage(help));
         match flag.as_str() {
-            "--seed" => config.planet.seed = value().parse().unwrap_or_else(|_| usage("graine invalide")),
-            "--planet-size" => config.planet.size = value().parse().unwrap_or_else(|_| usage("--planet-size 0.25..2")),
-            "--cities" => config.planet.cities = value().parse().unwrap_or_else(|_| usage("--cities 0..600")),
-            "--no-rivers" => config.planet.rivers = false,
-            "--ocean" => config.planet.ocean = value().parse().unwrap_or_else(|_| usage("--ocean 0..1")),
-            "--relief" => config.planet.relief = value().parse().unwrap_or_else(|_| usage("--relief 0.2..2")),
-            "--temperature" => {
-                config.planet.temperature = value().parse().unwrap_or_else(|_| usage("--temperature -0.5..0.5"))
+            "--seed" => config.planet.seed = number(&value(), 0, u64::MAX).unwrap_or_else(|| usage("--seed N")),
+            "--planet-size" => config.planet.size = real(0.25, 2.0, "--planet-size 0.25..2") as f32,
+            "--cities" => {
+                config.planet.cities =
+                    number(&value(), 0, PlanetParams::MAX_CITIES).unwrap_or_else(|| usage("--cities 0..600"))
             }
-            "--pos" => options.position = Some(pair(&value()).unwrap_or_else(|| usage("--pos lat,lon"))),
-            "--altitude" => options.altitude = value().parse().ok(),
-            "--yaw" => options.yaw = value().parse::<f32>().ok().map(f32::to_radians),
-            "--pitch" => options.pitch = value().parse::<f32>().ok().map(f32::to_radians),
-            "--time" => options.time = value().parse().ok(),
-            "--day-length" => options.day_length = value().parse().unwrap_or_else(|_| usage("--day-length s")),
+            "--no-rivers" => config.planet.rivers = false,
+            "--ocean" => config.planet.ocean = real(0.0, 1.0, "--ocean 0..1") as f32,
+            "--relief" => config.planet.relief = real(0.2, 2.0, "--relief 0.2..2") as f32,
+            "--temperature" => config.planet.temperature = real(-0.5, 0.5, "--temperature -0.5..0.5") as f32,
+            "--pos" => {
+                let (lat, lon) = pair(&value()).unwrap_or_else(|| usage("--pos lat,lon"));
+                if !(-90.0..=90.0).contains(&lat) || !(-360.0..=360.0).contains(&lon) {
+                    usage("--pos lat,lon : latitude de -90 a 90, longitude de -360 a 360");
+                }
+                options.position = Some((lat, lon));
+            }
+            "--altitude" => options.altitude = Some(real(0.0, 1.0e9, "--altitude m, de 0 a 1e9")),
+            "--yaw" => options.yaw = Some((real(-360.0, 360.0, "--yaw deg, de -360 a 360") as f32).to_radians()),
+            "--pitch" => options.pitch = Some((real(-90.0, 90.0, "--pitch deg, de -90 a 90") as f32).to_radians()),
+            "--time" => options.time = Some(real(0.0, 1.0, "--time 0..1") as f32),
+            "--day-length" => options.day_length = real(0.0, 1.0e6, "--day-length s, 0 ou plus") as f32,
             "--size" => {
-                let (w, h) = pair(&value()).unwrap_or_else(|| usage("--size largeur,hauteur"));
+                let (min, max) = (f64::from(MIN_WINDOW_SIZE), f64::from(MAX_WINDOW_SIZE));
+                let (w, h) = pair(&value())
+                    .filter(|(w, h)| (min..=max).contains(w) && (min..=max).contains(h))
+                    .unwrap_or_else(|| usage("--size largeur,hauteur : de 64 a 8192 pixels"));
                 (config.width, config.height) = (w as u32, h as u32);
             }
             "--render-distance" => {
-                let km: f64 = value().parse().unwrap_or_else(|_| usage("--render-distance km"));
-                config.stream.set_render_distance(km * 1000.0);
+                config.stream.set_render_distance(real(5.0, 1000.0, "--render-distance km, de 5 a 1000") * 1000.0);
             }
             "--no-vsync" => config.vsync = false,
-            "--autopilot" => options.autopilot = value().parse().ok(),
-            "--regenerate" => options.regenerate_seed = value().parse().ok(),
+            "--autopilot" => options.autopilot = Some(real(0.0, 3.0e10, "--autopilot m/s, 0 ou plus")),
+            "--regenerate" => {
+                options.regenerate_seed =
+                    Some(number(&value(), 0, u64::MAX).unwrap_or_else(|| usage("--regenerate N")));
+            }
             "--menu" => config.start_with_menu = true,
             "--mute" => config.sound = false,
             "--drive" => options.drive = true,
@@ -418,4 +445,31 @@ fn usage(message: &str) -> ! {
          \n  --screenshot f.png  attend le chargement, enregistre l'image et quitte"
     );
     std::process::exit(if message.is_empty() { 0 } else { 2 });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn number_accepts_only_finite_values_in_range() {
+        assert_eq!(number(" 0.5 ", 0.0, 1.0), Some(0.5));
+        assert_eq!(number("1", 0.0, 1.0), Some(1.0));
+        assert_eq!(number("1.01", 0.0, 1.0), None);
+        assert_eq!(number("nan", 0.0, 1.0), None);
+        assert_eq!(number("inf", 0.0, f64::MAX), None);
+        assert_eq!(number("abc", 0.0, 1.0), None);
+        assert_eq!(number("600", 0u32, 600), Some(600));
+        assert_eq!(number("601", 0u32, 600), None);
+        assert_eq!(number("-1", 0u32, 600), None);
+    }
+
+    #[test]
+    fn pair_needs_two_finite_numbers() {
+        assert_eq!(pair("48.85, 2.35"), Some((48.85, 2.35)));
+        assert_eq!(pair("48.85"), None);
+        assert_eq!(pair("nan,2"), None);
+        assert_eq!(pair("1,inf"), None);
+        assert_eq!(pair("a,b"), None);
+    }
 }

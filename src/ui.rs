@@ -70,6 +70,7 @@ pub struct MenuState {
 }
 
 impl MenuState {
+    /// Menu ferme, regle sur les parametres de la planete affichee.
     pub fn new(params: PlanetParams) -> Self {
         let clock = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -94,11 +95,13 @@ impl MenuState {
         self.seed_text = params.seed.to_string();
     }
 
+    /// Remplace les cartes de la planete : sans et avec les plaques tectoniques.
     pub fn set_map(&mut self, images: [egui::ColorImage; 2]) {
         self.map_images = Some(images);
     }
 }
 
+/// Distance lisible : en metres, puis en kilometres (au dixieme jusqu'a 1000 km).
 pub fn format_distance(m: f64) -> String {
     let a = m.abs();
     if a < 1000.0 {
@@ -110,6 +113,7 @@ pub fn format_distance(m: f64) -> String {
     }
 }
 
+/// Vitesse lisible, a partir de metres par seconde : km/h, puis km/s au-dela de 1000 m/s.
 pub fn format_speed(v: f64) -> String {
     if v < 1000.0 {
         format!("{:.0} km/h", v * 3.6)
@@ -123,21 +127,26 @@ fn hud(ctx: &egui::Context, d: &HudData) {
         .anchor(egui::Align2::LEFT_TOP, egui::vec2(10.0, 10.0))
         .interactable(false)
         .show(ctx, |ui| {
-            egui::Frame::NONE
-                .fill(egui::Color32::from_black_alpha(130))
-                .corner_radius(4.0)
-                .inner_margin(8.0)
-                .show(ui, |ui| {
+            egui::Frame::NONE.fill(egui::Color32::from_black_alpha(130)).corner_radius(4.0).inner_margin(8.0).show(
+                ui,
+                |ui| {
                     ui.style_mut().override_text_style = Some(egui::TextStyle::Monospace);
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                     let color = egui::Color32::from_gray(225);
                     let line = |ui: &mut egui::Ui, text: String| {
                         ui.label(egui::RichText::new(text).color(color));
                     };
-                    let mode = if d.driving.is_some() { "voiture" } else if d.flying { "vol" } else { "marche" };
+                    let mode = if d.driving.is_some() {
+                        "voiture"
+                    } else if d.flying {
+                        "vol"
+                    } else {
+                        "marche"
+                    };
                     line(ui, format!("Altitude  {}", format_distance(d.altitude)));
                     line(ui, format!("Vitesse   {} ({mode})", format_speed(d.speed)));
-                    let (ns, ew) = (if d.latitude >= 0.0 { 'N' } else { 'S' }, if d.longitude >= 0.0 { 'E' } else { 'O' });
+                    let (ns, ew) =
+                        (if d.latitude >= 0.0 { 'N' } else { 'S' }, if d.longitude >= 0.0 { 'E' } else { 'O' });
                     line(ui, format!("Position  {:.2} {ns}  {:.2} {ew}", d.latitude.abs(), d.longitude.abs()));
                     let minutes = (d.local_time * 1440.0) as u32;
                     line(ui, format!("Heure     {:02}h{:02}", minutes / 60, minutes % 60));
@@ -171,18 +180,26 @@ fn hud(ctx: &egui::Context, d: &HudData) {
                         ),
                     );
                     if d.generating {
-                        ui.label(egui::RichText::new("Simulation d'une nouvelle planete...").color(egui::Color32::from_rgb(255, 210, 120)));
+                        ui.label(
+                            egui::RichText::new("Simulation d'une nouvelle planete...")
+                                .color(egui::Color32::from_rgb(255, 210, 120)),
+                        );
                     }
                     if !ui.ctx().is_using_pointer() {
                         ui.add_space(2.0);
                         line(ui, "Echap : menu".to_string());
                         if d.driving.is_some() {
-                            line(ui, "E : descendre   C : vue   L : phares   Espace : frein a main   R : remettre sur roues".to_string());
+                            line(
+                                ui,
+                                "E : descendre   C : vue   L : phares   Espace : frein a main   R : remettre sur roues"
+                                    .to_string(),
+                            );
                         } else if !d.flying {
                             line(ui, "E : prendre une voiture".to_string());
                         }
                     }
-                });
+                },
+            );
         });
     if let Some((speed, gear, rpm, head)) = d.driving {
         dashboard(ctx, speed, gear, rpm, head);
@@ -207,9 +224,18 @@ fn dashboard(ctx: &egui::Context, speed: f64, gear: i32, rpm: f64, head: bool) {
                 let k = i as f32 / 30.0;
                 let a = angle(k);
                 let long = i % 3 == 0;
-                p.line_segment([at(a, r - if long { 14.0 } else { 7.0 }), at(a, r - 2.0)], egui::Stroke::new(if long { 2.0_f32 } else { 1.0 }, egui::Color32::from_gray(220)));
+                p.line_segment(
+                    [at(a, r - if long { 14.0 } else { 7.0 }), at(a, r - 2.0)],
+                    egui::Stroke::new(if long { 2.0_f32 } else { 1.0 }, egui::Color32::from_gray(220)),
+                );
                 if long {
-                    p.text(at(a, r - 28.0), egui::Align2::CENTER_CENTER, format!("{}", i * 10), egui::FontId::proportional(11.0), egui::Color32::from_gray(200));
+                    p.text(
+                        at(a, r - 28.0),
+                        egui::Align2::CENTER_CENTER,
+                        format!("{}", i * 10),
+                        egui::FontId::proportional(11.0),
+                        egui::Color32::from_gray(200),
+                    );
                 }
             }
             // Zone rouge du compte-tours, en arc interieur.
@@ -219,19 +245,50 @@ fn dashboard(ctx: &egui::Context, speed: f64, gear: i32, rpm: f64, head: bool) {
                 if k > rev {
                     break;
                 }
-                let color = if k > 0.85 { egui::Color32::from_rgb(230, 50, 40) } else { egui::Color32::from_rgb(90, 170, 255) };
-                p.line_segment([at(angle(k), r - 44.0), at(angle(k + 1.0 / 60.0), r - 44.0)], egui::Stroke::new(4.0_f32, color));
+                let color =
+                    if k > 0.85 { egui::Color32::from_rgb(230, 50, 40) } else { egui::Color32::from_rgb(90, 170, 255) };
+                p.line_segment(
+                    [at(angle(k), r - 44.0), at(angle(k + 1.0 / 60.0), r - 44.0)],
+                    egui::Stroke::new(4.0_f32, color),
+                );
             }
             let kmh = (speed.abs() * 3.6) as f32;
             let a = angle((kmh / 300.0).clamp(0.0, 1.0));
-            p.line_segment([at(a + std::f32::consts::PI, 12.0), at(a, r - 10.0)], egui::Stroke::new(3.0_f32, egui::Color32::from_rgb(255, 80, 40)));
+            p.line_segment(
+                [at(a + std::f32::consts::PI, 12.0), at(a, r - 10.0)],
+                egui::Stroke::new(3.0_f32, egui::Color32::from_rgb(255, 80, 40)),
+            );
             p.circle_filled(c, 7.0, egui::Color32::from_gray(40));
-            p.text(c + egui::vec2(0.0, 36.0), egui::Align2::CENTER_CENTER, format!("{kmh:.0}"), egui::FontId::monospace(28.0), egui::Color32::WHITE);
-            p.text(c + egui::vec2(0.0, 60.0), egui::Align2::CENTER_CENTER, "km/h", egui::FontId::proportional(11.0), egui::Color32::from_gray(180));
+            p.text(
+                c + egui::vec2(0.0, 36.0),
+                egui::Align2::CENTER_CENTER,
+                format!("{kmh:.0}"),
+                egui::FontId::monospace(28.0),
+                egui::Color32::WHITE,
+            );
+            p.text(
+                c + egui::vec2(0.0, 60.0),
+                egui::Align2::CENTER_CENTER,
+                "km/h",
+                egui::FontId::proportional(11.0),
+                egui::Color32::from_gray(180),
+            );
             let g = if gear < 0 { "R".to_string() } else { gear.to_string() };
-            p.text(c + egui::vec2(0.0, 80.0), egui::Align2::CENTER_CENTER, g, egui::FontId::monospace(18.0), egui::Color32::from_rgb(120, 220, 120));
+            p.text(
+                c + egui::vec2(0.0, 80.0),
+                egui::Align2::CENTER_CENTER,
+                g,
+                egui::FontId::monospace(18.0),
+                egui::Color32::from_rgb(120, 220, 120),
+            );
             if head {
-                p.text(c + egui::vec2(-58.0, 70.0), egui::Align2::CENTER_CENTER, "phares", egui::FontId::proportional(10.0), egui::Color32::from_rgb(110, 200, 255));
+                p.text(
+                    c + egui::vec2(-58.0, 70.0),
+                    egui::Align2::CENTER_CENTER,
+                    "phares",
+                    egui::FontId::proportional(10.0),
+                    egui::Color32::from_rgb(110, 200, 255),
+                );
             }
         });
 }
@@ -324,7 +381,10 @@ fn menu(ctx: &egui::Context, state: &mut MenuState, actions: &mut Vec<MenuAction
                 ui.add(egui::Slider::new(&mut state.params.temperature, -0.5..=0.5));
                 ui.end_row();
                 ui.label("Taille");
-                ui.add(egui::Slider::new(&mut state.params.size, 0.25..=2.0).custom_formatter(|v, _| format!("{:.0} km", v * 6371.0)));
+                ui.add(
+                    egui::Slider::new(&mut state.params.size, 0.25..=2.0)
+                        .custom_formatter(|v, _| format!("{:.0} km", v * 6371.0)),
+                );
                 ui.end_row();
                 ui.label("Villes");
                 ui.add(egui::Slider::new(&mut state.params.cities, 0..=600));
@@ -347,9 +407,9 @@ fn menu(ctx: &egui::Context, state: &mut MenuState, actions: &mut Vec<MenuAction
                     // Une graine en texte libre donne aussi une planete, toujours la meme.
                     let text = state.seed_text.trim();
                     state.params.seed = text.parse().unwrap_or_else(|_| {
-                        text.bytes().fold(0xCBF2_9CE4_8422_2325u64, |h, b| {
-                            (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01B3)
-                        }) >> 16
+                        text.bytes()
+                            .fold(0xCBF2_9CE4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01B3))
+                            >> 16
                     });
                     actions.push(MenuAction::NewPlanet(state.params));
                 }

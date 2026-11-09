@@ -2,7 +2,7 @@
 
 use crate::camera::Camera;
 use crate::input::Input;
-use crate::world::generator::{smoothstep, planet_radius};
+use crate::world::generator::{planet_radius, smoothstep};
 use crate::world::streaming::Streamer;
 use glam::DVec3;
 use winit::keyboard::KeyCode;
@@ -53,18 +53,18 @@ impl PlayerController {
         }
     }
 
+    /// Annule la vitesse acquise : a appeler apres une teleportation.
     pub fn stop(&mut self) {
         self.velocity = DVec3::ZERO;
         self.grounded = false;
     }
 
+    /// Une image de deplacement : regard a la souris, marche ou vol au clavier, gravite et collisions
+    /// avec le sol et les objets charges par `streamer`.
     pub fn update(&mut self, input: &Input, cam: &mut Camera, streamer: &Streamer, dt: f32) {
         let world = &*streamer.generator;
         if input.captured {
-            cam.turn(
-                input.mouse_delta.0 as f32 * self.sensitivity,
-                -input.mouse_delta.1 as f32 * self.sensitivity,
-            );
+            cam.turn(input.mouse_delta.0 as f32 * self.sensitivity, -input.mouse_delta.1 as f32 * self.sensitivity);
         }
         if input.just_pressed(KeyCode::KeyF) {
             self.fly = !self.fly;

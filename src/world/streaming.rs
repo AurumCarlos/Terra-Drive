@@ -1,10 +1,11 @@
-﻿//! Selection du quadtree de la planete et generation en arriere-plan, sans dependance au GPU.
+//! Selection du quadtree de la planete et generation en arriere-plan, sans dependance au GPU.
 
 use super::chunk::{build_chunk, ChunkMesh, NodeId};
-use super::generator::{Generator, MAX_HEIGHT, MIN_HEIGHT, planet_radius};
-use super::scatter::{build_grass, build_trees, CellObjects, GrassCell, Kind, CELL_LOD};
-use glam::DVec3;
 use super::fast_hash::{FastMap, FastSet};
+use super::generator::{planet_radius, Generator, MAX_HEIGHT, MIN_HEIGHT};
+use super::scatter::{build_grass, build_trees, CellObjects, GrassCell, Kind, CELL_LOD};
+use crate::sync::lock;
+use glam::DVec3;
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
@@ -44,7 +45,11 @@ pub const MIN_RENDER_DISTANCE: f64 = 5_000.0;
 pub const MAX_RENDER_DISTANCE: f64 = 1_000_000.0;
 
 impl StreamConfig {
+    /// Regle la distance de rendu, bornee entre [`MIN_RENDER_DISTANCE`] et [`MAX_RENDER_DISTANCE`],
+    /// et la portee des arbres et de l'herbe qui en decoule. Une valeur qui n'est pas un nombre
+    /// laisse la distance par defaut.
     pub fn set_render_distance(&mut self, metres: f64) {
+        let metres = if metres.is_nan() { DEFAULT_RENDER_DISTANCE } else { metres };
         self.render_distance = metres.clamp(MIN_RENDER_DISTANCE, MAX_RENDER_DISTANCE);
         self.tree_radius = (self.render_distance * 0.03).clamp(500.0, 6_000.0);
         self.grass_radius = (self.render_distance * 0.003).clamp(90.0, 320.0);
@@ -80,12 +85,17 @@ enum JobResult {
     Grass(NodeId, GrassCell),
 }
 
+/// Cellules de vegetation proches de la camera, avec leur distance.
+type NearCells = Vec<(NodeId, f64)>;
+
 #[derive(Default)]
 struct Queue {
     /// Trie pour que la tache la plus prioritaire soit a la fin.
     jobs: Vec<Job>,
     /// Taches prises par un worker et dont le resultat n'a pas encore ete integre.
     active: FastSet<Job>,
+    /// Taches dont le calcul a panique : elles ne sont plus redemandees, pour ne pas echouer en boucle.
+    failed: FastSet<Job>,
     shutdown: bool,
 }
 
@@ -159,7 +169,7 @@ pub struct Streamer {
     pub timings: [f64; 6],
     /// Cellules d'arbres et d'herbe autour de la camera, et la position ou elles ont ete calculees :
     /// le parcours du quadtree ne se refait qu'apres un deplacement de quelques metres.
-    cells: (DVec3, Vec<(NodeId, f64)>, Vec<(NodeId, f64)>),
+    cells: (DVec3, NearCells, NearCells),
     /// Chunks recus des threads de generation depuis le debut.
     pub generated: usize,
     /// Position de la camera et image du dernier parcours du quadtree.
@@ -167,43 +177,59 @@ pub struct Streamer {
 }
 
 impl Streamer {
+    /// Demarre les threads de generation (au moins un) pour la planete de `generator`. Rien n'est
+    /// charge avant le premier [`Streamer::update`].
     pub fn new(generator: Arc<Generator>, config: StreamConfig) -> Self {
         let shared = Arc::new(Shared { queue: Mutex::new(Queue::default()), wake: Condvar::new() });
         let (tx, results) = channel();
-        let workers = (0..config.workers)
-            .map(|i| {
+        let workers: Vec<JoinHandle<()>> = (0..config.workers.max(1))
+            .filter_map(|i| {
                 let (shared, gen, tx) = (shared.clone(), generator.clone(), tx.clone());
                 std::thread::Builder::new()
                     .name(format!("terra-world-{i}"))
                     .spawn(move || {
                         crate::world::generator::worker_thread(gen.params.radius());
                         loop {
-                        let job = {
-                            let mut q = shared.queue.lock().unwrap();
-                            loop {
-                                if q.shutdown {
-                                    return;
+                            let job = {
+                                let mut q = lock(&shared.queue);
+                                loop {
+                                    if q.shutdown {
+                                        return;
+                                    }
+                                    if let Some(job) = q.jobs.pop() {
+                                        q.active.insert(job);
+                                        break job;
+                                    }
+                                    q = crate::sync::wait(&shared.wake, q);
                                 }
-                                if let Some(job) = q.jobs.pop() {
-                                    q.active.insert(job);
-                                    break job;
-                                }
-                                q = shared.wake.wait(q).unwrap();
+                            };
+                            // Une panique dans une tache ne doit ni tuer ce thread (les autres taches
+                            // l'attendent), ni laisser la tache « en cours » pour toujours : elle est
+                            // mise de cote et le monde continue de se charger autour.
+                            let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match job {
+                                Job::Chunk(id) => JobResult::Chunk(build_chunk(&gen, id)),
+                                Job::Trees(c) => JobResult::Trees(c, build_trees(&gen, c)),
+                                Job::Grass(c) => JobResult::Grass(c, build_grass(&gen, c)),
+                            }));
+                            let Ok(result) = built else {
+                                eprintln!("generation : la tache {job:?} a echoue, elle est abandonnee");
+                                let mut q = lock(&shared.queue);
+                                q.active.remove(&job);
+                                q.failed.insert(job);
+                                continue;
+                            };
+                            if tx.send((job, result)).is_err() {
+                                return;
                             }
-                        };
-                        let result = match job {
-                            Job::Chunk(id) => JobResult::Chunk(build_chunk(&gen, id)),
-                            Job::Trees(c) => JobResult::Trees(c, build_trees(&gen, c)),
-                            Job::Grass(c) => JobResult::Grass(c, build_grass(&gen, c)),
-                        };
-                        if tx.send((job, result)).is_err() {
-                            return;
-                        }
                         }
                     })
-                    .expect("creation du thread de generation")
+                    .map_err(|e| eprintln!("generation : thread {i} impossible a creer ({e})"))
+                    .ok()
             })
             .collect();
+        if workers.is_empty() {
+            eprintln!("generation : aucun thread de calcul, le monde ne se chargera pas");
+        }
 
         Self {
             config,
@@ -255,10 +281,13 @@ impl Streamer {
         }
     }
 
+    /// Nombre de chunks en memoire.
     pub fn loaded_chunks(&self) -> usize {
         self.loaded.len()
     }
 
+    /// Une image de streaming autour de la camera `cam` : integre les chunks recus, choisit ce qui
+    /// se dessine et demande aux threads ce qui manque.
     pub fn update(&mut self, cam: DVec3) -> StreamUpdate {
         self.frame += 1;
         let mut mark = std::time::Instant::now();
@@ -299,7 +328,7 @@ impl Streamer {
         }
         lap(2, &mut timings);
 
-        if (self.cells.0 - cam).length() > 8.0 || self.frame % 120 == 0 {
+        if (self.cells.0 - cam).length() > 8.0 || self.frame.is_multiple_of(120) {
             let (mut trees, mut grass) = (Vec::new(), Vec::new());
             let (tr, gr) = (self.config.tree_radius, self.config.grass_radius);
             self.for_cells_within(cam, tr.max(gr), &mut |cell, d| {
@@ -319,7 +348,8 @@ impl Streamer {
 
         // Le grossier d'abord pres de la camera : la planete apparait vite puis s'affine.
         requests.sort_by(|a, b| b.0.total_cmp(&a.0));
-        let mut q = self.shared.queue.lock().unwrap();
+        let mut q = lock(&self.shared.queue);
+        requests.retain(|r| !q.failed.contains(&r.1));
         q.jobs.clear();
         let active = std::mem::take(&mut q.active);
         q.jobs.extend(requests.iter().map(|r| r.1).filter(|j| !active.contains(j)));
@@ -338,7 +368,7 @@ impl Streamer {
     fn integrate_results(&mut self, update: &mut StreamUpdate) {
         for _ in 0..self.config.uploads_per_frame {
             let Ok((job, result)) = self.results.try_recv() else { break };
-            self.shared.queue.lock().unwrap().active.remove(&job);
+            lock(&self.shared.queue).active.remove(&job);
             match result {
                 JobResult::Chunk(mesh) => {
                     self.generated += 1;
@@ -475,7 +505,7 @@ impl Streamer {
 impl Drop for Streamer {
     fn drop(&mut self) {
         {
-            let mut q = self.shared.queue.lock().unwrap();
+            let mut q = lock(&self.shared.queue);
             q.shutdown = true;
             q.jobs.clear();
         }
@@ -489,6 +519,18 @@ impl Drop for Streamer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn render_distance_ignores_nan_and_stays_in_bounds() {
+        let mut c = StreamConfig::default();
+        c.set_render_distance(f64::NAN);
+        assert_eq!(c.render_distance, DEFAULT_RENDER_DISTANCE);
+        c.set_render_distance(f64::INFINITY);
+        assert_eq!(c.render_distance, MAX_RENDER_DISTANCE);
+        c.set_render_distance(-1.0);
+        assert_eq!(c.render_distance, MIN_RENDER_DISTANCE);
+        assert!(c.tree_radius.is_finite() && c.grass_radius.is_finite());
+    }
     use crate::world::generator::PlanetParams;
     use std::time::{Duration, Instant};
 

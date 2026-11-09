@@ -21,11 +21,13 @@ fn main() {
     {
         // Sondes eparses dans toute la ville, comme le plan.
         let d = Detail::for_spacing(25.0);
-        let pts: Vec<_> = (0..20_000).map(|k| {
-            let a = k as f64 * 2.399;
-            let r = (k as f64 / 20_000.0).sqrt() * city.radius;
-            city.dir_of(glam::DVec2::new(a.cos() * r, a.sin() * r))
-        }).collect();
+        let pts: Vec<_> = (0..20_000)
+            .map(|k| {
+                let a = k as f64 * 2.399;
+                let r = (k as f64 / 20_000.0).sqrt() * city.radius;
+                city.dir_of(glam::DVec2::new(a.cos() * r, a.sin() * r))
+            })
+            .collect();
         for (name, f) in [
             ("surface", &(|p| gen.surface_detail(p, &d).height) as &dyn Fn(glam::DVec3) -> f32),
             ("naturel", &|p| gen.surface_natural(p, &d).height),
@@ -40,7 +42,11 @@ fn main() {
         let v = terra::world::generator::par_map(pts.len(), |k| gen.surface_detail(pts[k], &d).height);
         std::hint::black_box(v);
         // Un ecart faible entre 1 coeur et tous les coeurs trahit un verrou ou un cache partage.
-        println!("sonde ville sur tous les coeurs ({}) : {:.2} us", std::thread::available_parallelism().map_or(0, |n| n.get()), t.elapsed().as_secs_f64() * 1e6 / pts.len() as f64);
+        println!(
+            "sonde ville sur tous les coeurs ({}) : {:.2} us",
+            std::thread::available_parallelism().map_or(0, |n| n.get()),
+            t.elapsed().as_secs_f64() * 1e6 / pts.len() as f64
+        );
     }
 
     let mut total_chunks = 0.0;
@@ -70,7 +76,10 @@ fn main() {
         total_chunks += ms;
         count += ids.len();
         println!("{name} : {} chunks en {ms:.0} ms ({:.1} ms/chunk)", ids.len(), ms / ids.len() as f64);
-        println!("  par LOD (ms, 5 chunks) : {}", by_lod.iter().map(|v| format!("{v:.0}")).collect::<Vec<_>>().join(" "));
+        println!(
+            "  par LOD (ms, 5 chunks) : {}",
+            by_lod.iter().map(|v| format!("{v:.0}")).collect::<Vec<_>>().join(" ")
+        );
 
         // Cellules de vegetation sous la camera.
         let t = Instant::now();
@@ -88,7 +97,9 @@ fn main() {
         println!("  arbres {trees} en {tt:.0} ms, herbe {grass} en {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
     }
     // Detail d'un chunk : temps de chaque etape sur sa grille de 51 x 51 points.
-    for (name, dir, lod) in [("depart L3", spawn, 3u8), ("depart L9", spawn, 9), ("ville L2", town, 2), ("ville L8", town, 8)] {
+    for (name, dir, lod) in
+        [("depart L3", spawn, 3u8), ("depart L9", spawn, 9), ("ville L2", town, 2), ("ville L8", town, 8)]
+    {
         let id = NodeId::containing(dir, lod);
         let d = Detail::for_spacing(id.spacing());
         let dirs: Vec<_> = (0..51 * 51).map(|k| id.dir_at((k % 51) as f64 / 48.0, (k / 51) as f64 / 48.0)).collect();
@@ -115,7 +126,10 @@ fn main() {
         let t = Instant::now();
         std::hint::black_box(build_chunk(&gen, id));
         let total = t.elapsed().as_secs_f64() * 1000.0;
-        println!("{name} : chunk {total:.1} ms | {}", parts.iter().map(|(n, v)| format!("{n} {v:.1}")).collect::<Vec<_>>().join(", "));
+        println!(
+            "{name} : chunk {total:.1} ms | {}",
+            parts.iter().map(|(n, v)| format!("{n} {v:.1}")).collect::<Vec<_>>().join(", ")
+        );
     }
     println!("TOTAL chunks : {count} en {total_chunks:.0} ms ({:.1} ms/chunk)", total_chunks / count as f64);
 }

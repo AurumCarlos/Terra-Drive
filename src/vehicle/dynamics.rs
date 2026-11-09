@@ -1,4 +1,4 @@
-﻿//! Dynamique de la voiture : une caisse rigide en 3D portee par quatre suspensions, sans le monde.
+//! Dynamique de la voiture : une caisse rigide en 3D portee par quatre suspensions, sans le monde.
 //!
 //! - Caisse : corps rigide a six degres de liberte (position, vitesse, orientation, vitesse angulaire,
 //!   tenseur d'inertie). Plongee, cabrage, roulis et sauts ne sont pas animes : ils sortent du calcul.
@@ -82,7 +82,16 @@ const STEP: f64 = 1.0 / 240.0;
 
 /// Couple du moteur a pleine charge (N m) selon le regime.
 pub fn torque_curve(rpm: f64) -> f64 {
-    const CURVE: [(f64, f64); 8] = [(0.0, 250.0), (1000.0, 320.0), (2000.0, 400.0), (3000.0, 450.0), (4500.0, 470.0), (5800.0, 455.0), (6800.0, 420.0), (7400.0, 380.0)];
+    const CURVE: [(f64, f64); 8] = [
+        (0.0, 250.0),
+        (1000.0, 320.0),
+        (2000.0, 400.0),
+        (3000.0, 450.0),
+        (4500.0, 470.0),
+        (5800.0, 455.0),
+        (6800.0, 420.0),
+        (7400.0, 380.0),
+    ];
     let rpm = rpm.clamp(0.0, 7400.0);
     for w in CURVE.windows(2) {
         if rpm <= w[1].0 {
@@ -229,14 +238,17 @@ impl Chassis {
         self.omega = [v / WHEEL_RADIUS as f64; 4];
     }
 
+    /// Le haut de la caisse, dans le monde.
     pub fn up(&self) -> DVec3 {
         self.rot * DVec3::Y
     }
 
+    /// L'avant de la caisse, dans le monde.
     pub fn forward(&self) -> DVec3 {
         self.rot * DVec3::Z
     }
 
+    /// La droite de la caisse, dans le monde.
     pub fn right(&self) -> DVec3 {
         self.rot * DVec3::NEG_X
     }
@@ -256,10 +268,12 @@ impl Chassis {
         self.vel.dot(self.forward())
     }
 
+    /// Vitesse laterale, positive vers la droite : non nulle quand la voiture glisse.
     pub fn vy(&self) -> f64 {
         self.vel.dot(self.right())
     }
 
+    /// Vitesse, en metres par seconde, quelle que soit sa direction.
     pub fn speed(&self) -> f64 {
         self.vel.length()
     }
@@ -272,7 +286,11 @@ impl Chassis {
     /// Angle de derive de la caisse (rad).
     pub fn drift_angle(&self) -> f64 {
         let vx = self.vx();
-        if vx.abs() < 2.0 { 0.0 } else { self.vy().atan2(vx.abs()) }
+        if vx.abs() < 2.0 {
+            0.0
+        } else {
+            self.vy().atan2(vx.abs())
+        }
     }
 
     /// Position de la pedale d'accelerateur, telle que le moteur la voit (0 a 1).
@@ -452,9 +470,9 @@ impl Chassis {
             spring[k] = f;
             contact[k] = m - up * l - n * r;
         }
-        for axle in 0..2 {
+        for (axle, stiffness) in ANTI_ROLL.iter().enumerate() {
             let (i, j) = (axle * 2, axle * 2 + 1);
-            let f = ANTI_ROLL[axle] * (self.length[j] - self.length[i]);
+            let f = stiffness * (self.length[j] - self.length[i]);
             if self.touching[i] {
                 spring[i] += f;
             }
@@ -475,7 +493,10 @@ impl Chassis {
                 if k >= 2 {
                     w += axle_torque * 0.5 / (WHEEL_INERTIA * 4.0) * dt;
                 }
-                let stop = (c.brake * BRAKE_TORQUE[(k >= 2) as usize] + if k >= 2 { c.handbrake * HANDBRAKE_TORQUE } else { 0.0 }) / WHEEL_INERTIA * dt;
+                let stop = (c.brake * BRAKE_TORQUE[(k >= 2) as usize]
+                    + if k >= 2 { c.handbrake * HANDBRAKE_TORQUE } else { 0.0 })
+                    / WHEEL_INERTIA
+                    * dt;
                 self.omega[k] = if w > 0.0 { (w - stop).max(0.0) } else { (w + stop).min(0.0) };
                 continue;
             }
@@ -578,7 +599,7 @@ impl Chassis {
                 .iter()
                 .chain(std::iter::once(&ground.body))
                 .min_by(|a, b| (a.point - at).length_squared().total_cmp(&(b.point - at).length_squared()))
-                .unwrap();
+                .unwrap_or(&ground.body);
             let depth = -(at - plane.point).dot(plane.normal);
             if depth <= 0.0 {
                 continue;
@@ -654,7 +675,14 @@ mod tests {
             ch.update(&Controls { throttle: 1.0, ..Default::default() }, &flat(), 1.0 / 60.0);
             t += 1.0 / 60.0;
             if trace() && ((t * 60.0) as i32) % 15 == 0 {
-                eprintln!("t {t:.2} v {:.1} g {} rpm {:.0} load {:?} pitch {:.3}", ch.vx() * 3.6, ch.gear, ch.rpm, ch.load.map(|l| l as i32), ch.forward().y);
+                eprintln!(
+                    "t {t:.2} v {:.1} g {} rpm {:.0} load {:?} pitch {:.3}",
+                    ch.vx() * 3.6,
+                    ch.gear,
+                    ch.rpm,
+                    ch.load.map(|l| l as i32),
+                    ch.forward().y
+                );
             }
         }
         assert!((3.8..7.0).contains(&t), "0-100 km/h en {t:.2} s");
@@ -721,7 +749,12 @@ mod tests {
         ch.launch(40.0);
         ch.gear = 5;
         run(&mut ch, Controls { throttle: 0.4, ..Default::default() }, &flat(), 5.0);
-        assert!(ch.vy().abs() < 0.05 && ch.yaw_rate(DVec3::Y).abs() < 0.01, "tout droit : {} {}", ch.vy(), ch.yaw_rate(DVec3::Y));
+        assert!(
+            ch.vy().abs() < 0.05 && ch.yaw_rate(DVec3::Y).abs() < 0.01,
+            "tout droit : {} {}",
+            ch.vy(),
+            ch.yaw_rate(DVec3::Y)
+        );
     }
 
     #[test]

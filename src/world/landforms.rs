@@ -1,8 +1,8 @@
-﻿//! Les formes du terrain : ravines d'erosion sans simulation, plateaux en gradins, tours rocheuses,
+//! Les formes du terrain : ravines d'erosion sans simulation, plateaux en gradins, tours rocheuses,
 //! dunes et volcans. Tout se calcule point par point, sans voisins, donc en parallele et par morceaux.
 
 use super::cube::{CubeField, CubeGrid};
-use super::generator::{smoothstep, Climate, planet_radius};
+use super::generator::{planet_radius, smoothstep, Climate};
 use super::hydrology::par_cells;
 use super::noise::{hash_seed, Noise, Rng};
 use super::tectonics::{Boundary, Tectonics};
@@ -40,8 +40,15 @@ pub fn turn_sin_cos(t: f32) -> (f32, f32) {
     let x = r * TAU;
     let x2 = x * x;
     // Series de Taylor jusqu'a x^11 et x^12 : erreur sous 1e-7 sur [-pi/2, pi/2].
-    let sin = x * (1.0 + x2 * (-1.0 / 6.0 + x2 * (1.0 / 120.0 + x2 * (-1.0 / 5040.0 + x2 * (1.0 / 362_880.0 + x2 * (-1.0 / 39_916_800.0))))));
-    let cos = 1.0 + x2 * (-0.5 + x2 * (1.0 / 24.0 + x2 * (-1.0 / 720.0 + x2 * (1.0 / 40_320.0 + x2 * (-1.0 / 3_628_800.0 + x2 * (1.0 / 479_001_600.0))))));
+    let sin = x
+        * (1.0
+            + x2 * (-1.0 / 6.0
+                + x2 * (1.0 / 120.0 + x2 * (-1.0 / 5040.0 + x2 * (1.0 / 362_880.0 + x2 * (-1.0 / 39_916_800.0))))));
+    let cos = 1.0
+        + x2 * (-0.5
+            + x2 * (1.0 / 24.0
+                + x2 * (-1.0 / 720.0
+                    + x2 * (1.0 / 40_320.0 + x2 * (-1.0 / 3_628_800.0 + x2 * (1.0 / 479_001_600.0))))));
     (sin, cos * flip)
 }
 
@@ -56,6 +63,7 @@ pub struct Cells {
 }
 
 impl Cells {
+    /// Cellules de la graine `seed`.
     pub fn new(seed: u64) -> Self {
         Self { seed }
     }
@@ -76,9 +84,14 @@ impl Cells {
     /// `hash`, avec deux produits par axe au lieu de huit.
     #[inline(always)]
     fn corner_hashes(&self, ix: i64, iy: i64, iz: i64) -> [u64; 8] {
-        let x = [(ix as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15), ((ix + 1) as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)];
-        let y = [(iy as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F), ((iy + 1) as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F)];
-        let z = [self.seed ^ (iz as u64).wrapping_mul(0x1656_67B1_9E37_79F9), self.seed ^ ((iz + 1) as u64).wrapping_mul(0x1656_67B1_9E37_79F9)];
+        let x =
+            [(ix as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15), ((ix + 1) as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)];
+        let y =
+            [(iy as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F), ((iy + 1) as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F)];
+        let z = [
+            self.seed ^ (iz as u64).wrapping_mul(0x1656_67B1_9E37_79F9),
+            self.seed ^ ((iz + 1) as u64).wrapping_mul(0x1656_67B1_9E37_79F9),
+        ];
         std::array::from_fn(|k| {
             let mut h = z[k >> 2] ^ x[k & 1] ^ y[(k >> 1) & 1];
             h = (h ^ (h >> 29)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -106,7 +119,9 @@ impl Cells {
                 ((h >> 21) & 0x1F_FFFF) as f32 / 2_097_152.0 - 0.5,
                 ((h >> 42) & 0x1F_FFFF) as f32 / 2_097_152.0 - 0.5,
             );
-            let weight = (if a > 0.5 { u } else { 1.0 - u }) * (if b > 0.5 { v } else { 1.0 - v }) * (if c > 0.5 { w } else { 1.0 - w });
+            let weight = (if a > 0.5 { u } else { 1.0 - u })
+                * (if b > 0.5 { v } else { 1.0 - v })
+                * (if c > 0.5 { w } else { 1.0 - w });
             let d = f - Vec3::new(a, b, c) - jitter;
             let (s, co) = turn_sin_cos(d.dot(wave));
             sum_c += weight * co;
@@ -121,7 +136,16 @@ impl Cells {
     /// Ravines et cretes emboitees, alignees sur la pente. `slope` : gradient local du relief, en m/m,
     /// dans le plan tangent. `fade` : ce que devient le terrain plat, de -1 (creux) a 1 (sommet).
     /// Chaque octave suit le gradient cumule, donc les petites ravines descendent le flanc des grandes.
-    pub fn erosion(&self, p: DVec3, up: Vec3, slope: Vec3, period: f64, octaves: u32, fade: f32, strength: f32) -> Eroded {
+    pub fn erosion(
+        &self,
+        p: DVec3,
+        up: Vec3,
+        slope: Vec3,
+        period: f64,
+        octaves: u32,
+        fade: f32,
+        strength: f32,
+    ) -> Eroded {
         let mut mask = ease_out(slope.length() * 9.0);
         let mut target = fade;
         let mut gradient = slope;
@@ -252,7 +276,13 @@ pub struct Provinces {
 }
 
 impl Provinces {
-    pub fn build(seed: u64, elevation: &CubeField, orogeny: &CubeField, climate: &(dyn Fn(DVec3, f32) -> Climate + Sync)) -> Self {
+    /// Calcule les provinces de relief d'apres l'altitude de base, l'orogenese et le climat.
+    pub fn build(
+        seed: u64,
+        elevation: &CubeField,
+        orogeny: &CubeField,
+        climate: &(dyn Fn(DVec3, f32) -> Climate + Sync),
+    ) -> Self {
         let grid = CubeGrid { n: 256 };
         let layer = |i: i64| Noise::new(hash_seed(seed, 0x9207, i));
         let noises: [Noise; 8] = std::array::from_fn(|i| layer(i as i64));
@@ -260,7 +290,11 @@ impl Provinces {
         // Des regions de quelques centaines de km : on en traverse plusieurs en un vol.
         let score_of = |c: usize| -> [f32; 8] {
             let dir = grid.center(c);
-            let w = DVec3::new(warp.0.fbm(dir * 3.0, 3) as f64, warp.1.fbm(dir * 3.0, 3) as f64, warp.2.fbm(dir * 3.0, 3) as f64);
+            let w = DVec3::new(
+                warp.0.fbm(dir * 3.0, 3) as f64,
+                warp.1.fbm(dir * 3.0, 3) as f64,
+                warp.2.fbm(dir * 3.0, 3) as f64,
+            );
             let at = dir + w * 0.28;
             let n = |i: usize| (noises[i].fbm(at * 9.0, 3) * 1.9 + 0.5).clamp(0.02, 1.2);
             let e = elevation.sample(dir).max(0.0);
@@ -299,10 +333,21 @@ impl Provinces {
         Self { fields, palette: CubeField::from_cells(grid, &palette), autumn: CubeField::from_cells(grid, &autumn) }
     }
 
+    /// Poids de chaque type de relief au lieu `dir`, interpoles entre les cellules.
     #[inline]
     pub fn at(&self, dir: DVec3) -> Province {
-        let v: [f32; 8] = CubeField::sample_linear_many(std::array::from_fn(|i| &self.fields[i]), dir).map(|v| v.max(0.0));
-        Province { hills: v[0], mesa: v[1], badlands: v[2], dunes: v[3], karst: v[4], moor: v[5], inselberg: v[6], glacial: v[7] }
+        let v: [f32; 8] =
+            CubeField::sample_linear_many(std::array::from_fn(|i| &self.fields[i]), dir).map(|v| v.max(0.0));
+        Province {
+            hills: v[0],
+            mesa: v[1],
+            badlands: v[2],
+            dunes: v[3],
+            karst: v[4],
+            moor: v[5],
+            inselberg: v[6],
+            glacial: v[7],
+        }
     }
 }
 

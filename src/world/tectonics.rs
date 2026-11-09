@@ -93,7 +93,11 @@ pub fn simulate(seed: u64, plate_count: usize, land_share: f32) -> Tectonics {
             (random_axis(&mut rng), bias * bias * 0.55)
         })
         .collect();
-    let warp = [Noise::new(hash_seed(seed, 0x7EC7, 2)), Noise::new(hash_seed(seed, 0x7EC7, 3)), Noise::new(hash_seed(seed, 0x7EC7, 4))];
+    let warp = [
+        Noise::new(hash_seed(seed, 0x7EC7, 2)),
+        Noise::new(hash_seed(seed, 0x7EC7, 3)),
+        Noise::new(hash_seed(seed, 0x7EC7, 4)),
+    ];
     let shape = Noise::new(hash_seed(seed, 0x7EC7, 5));
     let old_belts = Noise::new(hash_seed(seed, 0x7EC7, 6));
 
@@ -104,7 +108,11 @@ pub fn simulate(seed: u64, plate_count: usize, land_share: f32) -> Tectonics {
 
     let mut particles: Vec<Particle> = Vec::with_capacity(cells);
     for (c, dir) in centers.iter().enumerate() {
-        let w = DVec3::new(warp[0].fbm(*dir * 3.0, 3) as f64, warp[1].fbm(*dir * 3.0, 3) as f64, warp[2].fbm(*dir * 3.0, 3) as f64);
+        let w = DVec3::new(
+            warp[0].fbm(*dir * 3.0, 3) as f64,
+            warp[1].fbm(*dir * 3.0, 3) as f64,
+            warp[2].fbm(*dir * 3.0, 3) as f64,
+        );
         let warped = (*dir + w * 0.55).normalize().as_vec3();
         let mut best = (0u16, f32::MIN);
         for (p, (center, bias)) in seeds.iter().enumerate() {
@@ -264,7 +272,7 @@ pub fn simulate(seed: u64, plate_count: usize, land_share: f32) -> Tectonics {
                 if seen == 0 {
                     return true;
                 }
-                let plate = found[..kinds].iter().max_by_key(|f| f.1).unwrap().0;
+                let Some(&(plate, _)) = found[..kinds].iter().max_by_key(|f| f.1) else { return true };
                 let hole = kinds == 1 && seen >= 6;
                 let n = seen as f32;
                 let home = plates[plate as usize].rotation.inverse() * centers[cell].as_vec3();
@@ -306,7 +314,8 @@ pub fn simulate(seed: u64, plate_count: usize, land_share: f32) -> Tectonics {
         // Les collisions freinent les plaques, qui ne reprennent de la vitesse que peu a peu.
         for (plate, contact) in plates.iter_mut().zip(&contacts) {
             let braking = (*contact as f32 / 120.0).min(1.0) * 0.35;
-            plate.rate = (plate.rate * (1.0 - braking) + (plate.base_rate - plate.rate) * 0.04).max(plate.base_rate * 0.12);
+            plate.rate =
+                (plate.rate * (1.0 - braking) + (plate.base_rate - plate.rate) * 0.04).max(plate.base_rate * 0.12);
         }
     }
 
@@ -375,10 +384,10 @@ mod tests {
         let mut distance = vec![u32::MAX; grid.cells()];
         let mut front: Vec<usize> = Vec::new();
         let mut out = [0; 8];
-        for c in 0..grid.cells() {
+        for (c, d) in distance.iter_mut().enumerate() {
             let count = grid.neighbours(c, &mut out);
             if out[..count].iter().any(|n| t.plate[*n as usize] != t.plate[c]) {
-                distance[c] = 0;
+                *d = 0;
                 front.push(c);
             }
         }
@@ -399,9 +408,9 @@ mod tests {
         }
         let mean = |pick: &dyn Fn(usize) -> bool| {
             let (mut sum, mut count) = (0u64, 0u64);
-            for c in 0..grid.cells() {
+            for (c, d) in distance.iter().enumerate() {
                 if pick(c) {
-                    sum += distance[c] as u64;
+                    sum += *d as u64;
                     count += 1;
                 }
             }

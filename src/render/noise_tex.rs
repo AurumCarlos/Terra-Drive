@@ -70,7 +70,9 @@ fn worley(p: [f32; 3], period: i32, salt: u32) -> f32 {
 }
 
 fn worley_fbm(p: [f32; 3], periods: [i32; 3], salt: u32) -> f32 {
-    worley(p, periods[0], salt) * 0.625 + worley(p, periods[1], salt + 1) * 0.25 + worley(p, periods[2], salt + 2) * 0.125
+    worley(p, periods[0], salt) * 0.625
+        + worley(p, periods[1], salt + 1) * 0.25
+        + worley(p, periods[2], salt + 2) * 0.125
 }
 
 fn perlin_fbm(p: [f32; 3], salt: u32) -> f32 {
@@ -119,7 +121,7 @@ pub fn build_noise() -> Vec<Vec<u8>> {
     let mut size = n;
     while size > 1 {
         let next = size / 2;
-        let last = levels.last().expect("au moins un niveau");
+        let Some(last) = levels.last() else { break };
         let mut mip = vec![0u8; next * next * next * 4];
         for z in 0..next {
             for y in 0..next {

@@ -1,4 +1,4 @@
-﻿//! Voiture : un modele detaille (voir `model`) et sa conduite sur la planete.
+//! Voiture : un modele detaille (voir `model`) et sa conduite sur la planete.
 //!
 //! La dynamique (voir `dynamics`) calcule la caisse en 3D sur ses quatre suspensions, les pneus, le moteur,
 //! la boite et les freins. Ici, on lui donne le sol sous chaque roue (relief, autoroutes, ponts, viaducs et
@@ -12,8 +12,8 @@ use crate::input::Input;
 use crate::world::generator::{planet_radius, Generator};
 use crate::world::streaming::Streamer;
 use glam::DVec3;
-pub use model::{lights, CarModel, Part};
 use model::DRIVER_EYE;
+pub use model::{lights, CarModel, Part};
 use winit::keyboard::KeyCode;
 
 use dynamics::{Chassis, Contact, Controls, Plane};
@@ -57,7 +57,9 @@ pub fn pose(model: &CarModel, frame: &VehicleFrame, out: &mut Vec<crate::world::
                 (m, model::WHEELS[k] + Vec3::Y * frame.travel[k])
             }
             Part::Hub(k) => (if k < 2 { steer } else { Mat3::IDENTITY }, model::WHEELS[k] + Vec3::Y * frame.travel[k]),
-            Part::Steering => (Mat3::from_axis_angle(model::steering_axis(), frame.steer * 12.0), model::STEERING_CENTER),
+            Part::Steering => {
+                (Mat3::from_axis_angle(model::steering_axis(), frame.steer * 12.0), model::STEERING_CENTER)
+            }
         };
         let (wm, wt) = (world * m, world * t);
         let body = *part == Part::Body;
@@ -171,7 +173,13 @@ fn plane_under(world: &Generator, p: DVec3, heading: DVec3) -> (Plane, f64) {
     let paved = world.cities.ground(dir, world) == crate::world::city::Ground::Road
         || world.cities.highways.clearance(dir).is_some_and(|c| c < 0.5)
         || world.cities.circuits.on_track(dir);
-    let grip = if depth > 0.15 { 0.45 } else if paved { 1.0 } else { 0.68 };
+    let grip = if depth > 0.15 {
+        0.45
+    } else if paved {
+        1.0
+    } else {
+        0.68
+    };
     (Plane { point: q0, normal: n, grip, rolling: if paved { 0.012 } else { 0.05 } }, depth)
 }
 
@@ -382,7 +390,8 @@ impl Car {
     /// La physique d'une image : le sol sous les roues, la dynamique, les chocs.
     fn simulate(&mut self, c: &Controls, world: &Generator, streamer: &Streamer, dt: f64) {
         let heading = self.chassis.forward();
-        let wheels: [Plane; 4] = std::array::from_fn(|k| plane_under(world, self.chassis.to_world(model::WHEELS[k].as_dvec3()), heading).0);
+        let wheels: [Plane; 4] =
+            std::array::from_fn(|k| plane_under(world, self.chassis.to_world(model::WHEELS[k].as_dvec3()), heading).0);
         let (body, depth) = plane_under(world, self.chassis.to_world(DVec3::new(0.0, 0.5, 0.0)), heading);
         let contact = Contact { up: self.chassis.pos.normalize(), wheels, body };
         self.chassis.update(c, &contact, dt);

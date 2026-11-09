@@ -42,25 +42,29 @@ pub struct CubeGrid {
 }
 
 impl CubeGrid {
+    /// Nombre total de cellules, sur les six faces.
     pub fn cells(&self) -> usize {
         6 * self.n * self.n
     }
 
+    /// Face (0 a 5), colonne et ligne de la cellule `cell`.
     pub fn coords(&self, cell: usize) -> (usize, usize, usize) {
         let per_face = self.n * self.n;
         let (face, rest) = (cell / per_face, cell % per_face);
         (face, rest % self.n, rest / self.n)
     }
 
-    fn to_uv(&self, i: f64) -> f64 {
+    fn to_uv(self, i: f64) -> f64 {
         (i + 0.5) / self.n as f64 * 2.0 - 1.0
     }
 
+    /// Direction du centre de la cellule.
     pub fn center(&self, cell: usize) -> DVec3 {
         let (face, i, j) = self.coords(cell);
         face_point(face, self.to_uv(i as f64), self.to_uv(j as f64))
     }
 
+    /// Cellule qui contient la direction `dir`.
     pub fn cell_of(&self, dir: DVec3) -> usize {
         let (face, u, v) = face_of(dir);
         let n = self.n as f64;
@@ -108,6 +112,8 @@ pub struct CubeField {
 }
 
 impl CubeField {
+    /// Champ a partir d'une valeur par cellule de `grid` (`cells` en compte `grid.cells()`). La marge
+    /// de chaque face est echantillonnee sur les faces voisines, pour interpoler sans couture.
     pub fn from_cells(grid: CubeGrid, cells: &[f32]) -> Self {
         let n = grid.n;
         let stride = n + 2 * PAD;
@@ -170,7 +176,8 @@ impl CubeField {
             let d = dir.dot(n);
             if d > 0.0 {
                 let w = k * k * (3.0 - 2.0 * k);
-                sum += w * read(self, other, (dir.dot(os) / d).atan() / FRAC_PI_4, (dir.dot(ot) / d).atan() / FRAC_PI_4);
+                sum +=
+                    w * read(self, other, (dir.dot(os) / d).atan() / FRAC_PI_4, (dir.dot(ot) / d).atan() / FRAC_PI_4);
                 total += w;
             }
         }
@@ -241,7 +248,12 @@ impl CubeField {
         let (x, y) = (ix as usize, iy as usize);
         let weights = |t: f32| {
             let (t2, t3) = (t * t, t * t * t);
-            [(1.0 - t) * (1.0 - t) * (1.0 - t) / 6.0, (3.0 * t3 - 6.0 * t2 + 4.0) / 6.0, (-3.0 * t3 + 3.0 * t2 + 3.0 * t + 1.0) / 6.0, t3 / 6.0]
+            [
+                (1.0 - t) * (1.0 - t) * (1.0 - t) / 6.0,
+                (3.0 * t3 - 6.0 * t2 + 4.0) / 6.0,
+                (-3.0 * t3 + 3.0 * t2 + 3.0 * t + 1.0) / 6.0,
+                t3 / 6.0,
+            ]
         };
         let (wx, wy) = (weights(fx), weights(fy));
         let origin = (face * self.stride + y - 1) * self.stride + x - 1;

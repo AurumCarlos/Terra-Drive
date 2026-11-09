@@ -3,13 +3,15 @@ use std::time::Instant;
 use terra::world::chunk::{build_chunk, NodeId};
 use terra::world::generator::{Generator, PlanetParams};
 
-
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let seed: u64 = args.first().and_then(|s| s.parse().ok()).unwrap_or(3);
     let rank: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
     let gen = Generator::new(PlanetParams { seed, ..Default::default() });
-    let city = &gen.cities.list[rank];
+    let Some(city) = gen.cities.list.get(rank) else {
+        eprintln!("rang {rank} : la planete {seed} n'a que {} villes", gen.cities.list.len());
+        std::process::exit(2);
+    };
     let t = Instant::now();
     city.plan(&gen);
     println!("{} : plan en {:.2} s", city.name, t.elapsed().as_secs_f32());

@@ -24,6 +24,7 @@ egui = "0.31"
 egui-wgpu = "0.31"
 egui-winit = { version = "0.31", default-features = false }
 cpal = "0.17"
+thiserror = "2"
 
 # La generation du monde doit rester fluide meme en build de developpement.
 [profile.dev]

@@ -1,6 +1,7 @@
 //! Fenetre, boucle de jeu et API que le jeu utilise.
 
 use crate::camera::Camera;
+use crate::error::Error;
 use crate::input::Input;
 use crate::render::{Renderer, UiFrame};
 use crate::sky::Sky;
@@ -9,7 +10,7 @@ use crate::world::generator::{dir_to_lat_lon, lat_lon_to_dir, Generator, PlanetP
 use crate::world::streaming::{StreamConfig, Streamer};
 use glam::DVec3;
 use std::path::PathBuf;
-use std::sync::mpsc::{channel, Receiver};
+use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::Arc;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
@@ -91,6 +92,7 @@ pub struct Context<'a> {
 pub trait Game: 'static {
     /// Appele une fois, avant la premiere image : place la camera, regle le ciel.
     fn start(&mut self, ctx: &mut Context);
+    /// Appele a chaque image, avant le rendu : `dt` est le temps ecoule en secondes, borne a 0,1 s.
     fn update(&mut self, ctx: &mut Context, dt: f32);
 }
 
@@ -149,7 +151,8 @@ impl Profile {
         self.since += dt;
         if self.since >= 5.0 {
             let n = self.frames as f64;
-            let parts: Vec<String> = Self::NAMES.iter().zip(self.sums).map(|(name, s)| format!("{name} {:.2}", s / n * 1000.0)).collect();
+            let parts: Vec<String> =
+                Self::NAMES.iter().zip(self.sums).map(|(name, s)| format!("{name} {:.2}", s / n * 1000.0)).collect();
             println!("profil (ms par image, {} images) : {}", self.frames, parts.join(", "));
             *self = Self::default();
         }
@@ -160,15 +163,40 @@ struct App<G: Game> {
     config: EngineConfig,
     game: G,
     state: Option<State>,
+    /// L'erreur qui a arrete la boucle, rendue par `run`.
+    error: Option<Error>,
+}
+
+impl<G: Game> App<G> {
+    /// Arrete la boucle sur une erreur fatale, que `run` rendra a l'appelant.
+    fn fail(&mut self, event_loop: &ActiveEventLoop, error: Error) {
+        self.error.get_or_insert(error);
+        event_loop.exit();
+    }
 }
 
 /// Lance le moteur ; ne rend la main qu'a la fermeture de la fenetre.
-pub fn run<G: Game>(config: EngineConfig, game: G) -> Result<(), String> {
-    let event_loop = EventLoop::new().map_err(|e| e.to_string())?;
+///
+/// Les reglages de la planete sont ramenes dans leurs bornes (voir [`PlanetParams::sanitized`]).
+///
+/// # Errors
+///
+/// Si la fenetre ou le rendu ne peuvent pas demarrer, ou si le rendu echoue sans reprise possible.
+pub fn run<G: Game>(mut config: EngineConfig, game: G) -> crate::Result<()> {
+    config.planet = config.planet.sanitized();
+    config.width = config.width.clamp(MIN_WINDOW_SIZE, MAX_WINDOW_SIZE);
+    config.height = config.height.clamp(MIN_WINDOW_SIZE, MAX_WINDOW_SIZE);
+    let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let mut app = App { config, game, state: None };
-    event_loop.run_app(&mut app).map_err(|e| e.to_string())
+    let mut app = App { config, game, state: None, error: None };
+    event_loop.run_app(&mut app)?;
+    app.error.map_or(Ok(()), Err)
 }
+
+/// Plus petite fenetre demandee a l'ouverture, en pixels : une surface de taille nulle est invalide.
+pub const MIN_WINDOW_SIZE: u32 = 64;
+/// Plus grande fenetre demandee a l'ouverture : au-dela, les textures depassent ce que les cartes acceptent.
+pub const MAX_WINDOW_SIZE: u32 = 8192;
 
 fn set_capture(window: &Window, input: &mut Input, capture: bool) {
     if capture {
@@ -193,19 +221,11 @@ impl<G: Game> ApplicationHandler for App<G> {
             .with_inner_size(PhysicalSize::new(self.config.width, self.config.height));
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
-            Err(e) => {
-                eprintln!("creation de la fenetre impossible : {e}");
-                event_loop.exit();
-                return;
-            }
+            Err(e) => return self.fail(event_loop, e.into()),
         };
         let renderer = match pollster::block_on(Renderer::new(window.clone(), self.config.vsync)) {
             Ok(r) => r,
-            Err(e) => {
-                eprintln!("initialisation du rendu impossible : {e}");
-                event_loop.exit();
-                return;
-            }
+            Err(e) => return self.fail(event_loop, e),
         };
         println!("GPU : {}", renderer.adapter_name);
 
@@ -276,11 +296,7 @@ impl<G: Game> ApplicationHandler for App<G> {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
         let Some(s) = &mut self.state else { return };
         // Souris capturee : l'interface ne doit pas voir les mouvements du jeu.
-        let consumed = if s.input.captured {
-            false
-        } else {
-            s.ui_winit.on_window_event(&s.window, &event).consumed
-        };
+        let consumed = if s.input.captured { false } else { s.ui_winit.on_window_event(&s.window, &event).consumed };
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => s.renderer.resize(size.width, size.height),
@@ -314,7 +330,9 @@ impl<G: Game> ApplicationHandler for App<G> {
                 }
             }
             WindowEvent::RedrawRequested => {
-                s.frame(&mut self.game, &self.config, event_loop);
+                if let Err(e) = s.frame(&mut self.game, &self.config, event_loop) {
+                    self.fail(event_loop, e);
+                }
             }
             _ => {}
         }
@@ -347,7 +365,11 @@ impl State {
 
     /// L'ambiance sonore du lieu : vent, eau, arbres, oiseaux ou grillons selon l'heure, ville.
     fn ambience(&mut self, dt: f32) {
-        let moved = if self.last_camera == DVec3::ZERO { 0.0 } else { (self.camera.position - self.last_camera).length() as f32 };
+        let moved = if self.last_camera == DVec3::ZERO {
+            0.0
+        } else {
+            (self.camera.position - self.last_camera).length() as f32
+        };
         self.last_camera = self.camera.position;
         if dt > 0.0 {
             let k = 1.0 - (-dt / 0.3).exp();
@@ -402,7 +424,12 @@ impl State {
                 continue;
             }
             for list in cell.objects.iter().take(6) {
-                trees += list.iter().filter(|it| (cell.center + glam::Vec3::from_array(it.pos).as_dvec3() - cam).length_squared() < 3600.0).count();
+                trees += list
+                    .iter()
+                    .filter(|it| {
+                        (cell.center + glam::Vec3::from_array(it.pos).as_dvec3() - cam).length_squared() < 3600.0
+                    })
+                    .count();
             }
         }
         let wooded = (trees as f32 / 25.0).min(1.0);
@@ -413,7 +440,8 @@ impl State {
         s.leaves = wooded * near;
         s.birds = if dry || climate.temperature < -5.0 { 0.0 } else { (0.15 + 0.85 * wooded) * day * near };
         s.insects = if dry || climate.temperature < 8.0 { 0.0 } else { (0.4 + 0.6 * wooded) * (1.0 - day) * near };
-        s.city = gen.cities.nearest(up).map_or(0.0, |(_, d)| (1.0 - d as f32 / 1500.0).clamp(0.0, 1.0)) * (1.0 - above / 600.0).clamp(0.0, 1.0);
+        s.city = gen.cities.nearest(up).map_or(0.0, |(_, d)| (1.0 - d as f32 / 1500.0).clamp(0.0, 1.0))
+            * (1.0 - above / 600.0).clamp(0.0, 1.0);
     }
 
     fn set_menu(&mut self, open: bool) {
@@ -425,6 +453,7 @@ impl State {
     /// La simulation prend quelques secondes : elle tourne a part, le jeu continue pendant ce temps.
     /// Une nouvelle demande remplace la precedente, dont le resultat sera perdu.
     fn request_planet(&mut self, params: PlanetParams) {
+        let params = params.sanitized();
         let (send, receive) = channel();
         std::thread::spawn(move || {
             crate::world::generator::worker_thread(params.radius());
@@ -436,7 +465,18 @@ impl State {
 
     fn receive_planet(&mut self) {
         let Some((params, started, receiver)) = &self.pending else { return };
-        let Ok(generator) = receiver.try_recv() else { return };
+        let generator = match receiver.try_recv() {
+            Ok(generator) => generator,
+            Err(TryRecvError::Empty) => return,
+            // Le thread de simulation s'est arrete sans rien rendre (panique) : on garde la planete
+            // actuelle, et le menu redevient disponible au lieu d'attendre indefiniment.
+            Err(TryRecvError::Disconnected) => {
+                eprintln!("la creation de la planete (graine {}) a echoue : planete actuelle conservee", params.seed);
+                self.pending = None;
+                self.menu.sync(self.generator.params);
+                return;
+            }
+        };
         let (params, seconds) = (*params, started.elapsed().as_secs_f32());
         self.pending = None;
         // L'ancienne generation s'arrete ici : ses threads finissent leur tache puis sortent.
@@ -462,13 +502,16 @@ impl State {
             self.ui_winit.handle_platform_output(&self.window, output.platform_output);
         }
         let primitives = self.ui_ctx.tessellate(output.shapes, output.pixels_per_point);
-        (
-            UiFrame { primitives, textures: output.textures_delta, pixels_per_point: output.pixels_per_point },
-            actions,
-        )
+        (UiFrame { primitives, textures: output.textures_delta, pixels_per_point: output.pixels_per_point }, actions)
     }
 
-    fn frame<G: Game>(&mut self, game: &mut G, config: &EngineConfig, event_loop: &ActiveEventLoop) {
+    /// Une image : jeu, streaming, rendu. Rend l'erreur de rendu quand elle est sans reprise possible.
+    fn frame<G: Game>(
+        &mut self,
+        game: &mut G,
+        config: &EngineConfig,
+        event_loop: &ActiveEventLoop,
+    ) -> crate::Result<()> {
         let now = Instant::now();
         let dt = (now - self.last_frame).as_secs_f32();
         self.last_frame = now;
@@ -495,7 +538,7 @@ impl State {
         self.input.end_frame();
         if self.exit {
             event_loop.exit();
-            return;
+            return Ok(());
         }
 
         lap(0, &mut times);
@@ -510,7 +553,11 @@ impl State {
         let mut capture = self.screenshot.take();
         let mut finish_after = false;
         if let Some(path) = &config.auto_screenshot {
-            self.idle_frames = if self.streamer.is_idle() && self.pending.is_none() && self.regenerate.is_none() { self.idle_frames + 1 } else { 0 };
+            self.idle_frames = if self.streamer.is_idle() && self.pending.is_none() && self.regenerate.is_none() {
+                self.idle_frames + 1
+            } else {
+                0
+            };
             if self.idle_frames == 30 {
                 capture = Some(path.clone());
                 finish_after = true;
@@ -532,7 +579,15 @@ impl State {
         self.hud.render_distance = self.streamer.config.render_distance;
         let up = self.camera.up();
         self.hud.circuit = self.generator.cities.circuits.nearest(up).and_then(|c| {
-            let dist = self.generator.cities.circuits.clearance(up).unwrap_or_else(|| ((c.center - up).length() * crate::world::generator::planet_radius() - c.radius).max(0.0)).max(0.0);
+            let dist = self
+                .generator
+                .cities
+                .circuits
+                .clearance(up)
+                .unwrap_or_else(|| {
+                    ((c.center - up).length() * crate::world::generator::planet_radius() - c.radius).max(0.0)
+                })
+                .max(0.0);
             (dist < 6000.0).then(|| (c.name(), c.location(), dist))
         });
         self.hud.city = self.generator.cities.nearest(up).map(|(i, dist)| {
@@ -554,7 +609,14 @@ impl State {
         let (ui_frame, actions) = self.run_ui();
         lap(4, &mut times);
 
-        let stats = self.renderer.render(&self.camera, &self.sky, &self.streamer, ui_frame, capture.as_deref(), self.vehicle.as_ref());
+        let stats = self.renderer.render(
+            &self.camera,
+            &self.sky,
+            &self.streamer,
+            ui_frame,
+            capture.as_deref(),
+            self.vehicle.as_ref(),
+        );
         lap(5, &mut times);
         if let Some(p) = &mut self.profile {
             if p.frames == 0 {
@@ -568,7 +630,8 @@ impl State {
                 let t: Vec<String> = self.renderer.timings.iter().map(|t| format!("{:.2}", t / n * 1000.0)).collect();
                 println!("  rendu (attente image, preparation, enregistrement, envoi) : {}", t.join(" "));
                 if let Some(gpu) = self.renderer.gpu_timer.as_mut().and_then(|t| t.take()) {
-                    let parts: Vec<String> = crate::render::GPU_SECTIONS.iter().zip(gpu).map(|(n, ms)| format!("{n} {ms:.2}")).collect();
+                    let parts: Vec<String> =
+                        crate::render::GPU_SECTIONS.iter().zip(gpu).map(|(n, ms)| format!("{n} {ms:.2}")).collect();
                     println!("  GPU (ms) : {}, total {:.2}", parts.join(", "), gpu.iter().sum::<f64>());
                 }
             }
@@ -579,18 +642,11 @@ impl State {
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                 let size = self.window.inner_size();
                 self.renderer.resize(size.width, size.height);
-                return;
+                return Ok(());
             }
-            Err(wgpu::SurfaceError::Timeout) => return,
-            Err(e) => {
-                eprintln!("erreur de rendu : {e}");
-                event_loop.exit();
-                return;
-            }
+            Err(wgpu::SurfaceError::Timeout) => return Ok(()),
+            Err(e) => return Err(e.into()),
         };
-        if let Some(path) = &capture {
-            println!("capture : {}", path.display());
-        }
         if finish_after {
             println!(
                 "{} chunks dessines, {:.2} M triangles, {} objets, derniere image {:.2} ms",
@@ -600,7 +656,7 @@ impl State {
                 dt * 1000.0
             );
             event_loop.exit();
-            return;
+            return Ok(());
         }
 
         self.hud.chunks = stats.chunks_drawn;
@@ -644,5 +700,6 @@ impl State {
         if let Some(params) = self.regenerate.take() {
             self.request_planet(params);
         }
+        Ok(())
     }
 }

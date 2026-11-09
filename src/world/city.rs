@@ -10,11 +10,11 @@
 //! decoupant les ilots le long de leur plus grand axe (Vanegas et al., 2012). Tout est deterministe :
 //! le plan d'une ville ne depend que de la graine, et n'est calcule qu'a l'approche.
 
-use super::generator::{smoothstep, Detail, Generator, planet_radius, SEA_LEVEL};
+use super::fast_hash::FastMap;
+use super::generator::{planet_radius, smoothstep, Detail, Generator, SEA_LEVEL};
 use super::highway::Highways;
 use super::noise::{hash_seed, Rng};
 use glam::{DVec2, DVec3};
-use super::fast_hash::FastMap;
 use std::sync::OnceLock;
 
 /// Cote d'un panier de la table qui retrouve les villes proches d'un point, en mailles par face du cube.
@@ -117,10 +117,12 @@ pub struct Road {
 }
 
 impl Road {
+    /// Longueur de la rue, en metres.
     pub fn length(&self) -> f64 {
         (self.b - self.a).length()
     }
 
+    /// Direction de la rue, de `a` vers `b` ; nulle si les deux bouts sont confondus.
     pub fn dir(&self) -> DVec2 {
         (self.b - self.a).normalize_or_zero()
     }
@@ -165,6 +167,7 @@ pub struct Building {
 }
 
 impl Building {
+    /// Centre de l'emprise au sol.
     pub fn center(&self) -> DVec2 {
         (self.foot[0] + self.foot[1] + self.foot[2] + self.foot[3]) * 0.25
     }
@@ -209,7 +212,13 @@ struct Grid {
 impl Grid {
     fn new(half: f64) -> Self {
         let n = (half * 2.0 / GRID_CELL).ceil() as usize + 1;
-        Self { half, n, roads: vec![Vec::new(); n * n], blocks: vec![Vec::new(); n * n], buildings: vec![Vec::new(); n * n] }
+        Self {
+            half,
+            n,
+            roads: vec![Vec::new(); n * n],
+            blocks: vec![Vec::new(); n * n],
+            buildings: vec![Vec::new(); n * n],
+        }
     }
 
     fn coords(&self, p: DVec2) -> (i64, i64) {
@@ -284,10 +293,14 @@ pub fn inside(p: &[DVec2], q: DVec2) -> bool {
     n >= 3 && (0..n).all(|i| (p[(i + 1) % n] - p[i]).perp_dot(q - p[i]) >= -1e-6)
 }
 
+/// Morceau de ville en cours de decoupe : un polygone convexe dont chaque sommet porte la rue qui
+/// longe le cote qui en part.
+type Piece = Vec<(DVec2, u32)>;
+
 /// Coupe un polygone convexe par une droite (point, direction). Chaque sommet porte la rue qui longe
 /// le cote qui en part. Rend la partie a gauche, celle a droite, et les deux points de coupe avec la
 /// rue de leur cote. Le nouveau cote, de part et d'autre, recoit la rue `cut`.
-fn split(poly: &[(DVec2, u32)], p: DVec2, d: DVec2, cut: u32) -> (Vec<(DVec2, u32)>, Vec<(DVec2, u32)>, Vec<(DVec2, u32)>) {
+fn split(poly: &[(DVec2, u32)], p: DVec2, d: DVec2, cut: u32) -> (Piece, Piece, Piece) {
     let side = |v: DVec2| d.perp_dot(v - p);
     let (mut l, mut r, mut hits) = (Vec::new(), Vec::new(), Vec::new());
     let n = poly.len();
@@ -315,7 +328,7 @@ fn split(poly: &[(DVec2, u32)], p: DVec2, d: DVec2, cut: u32) -> (Vec<(DVec2, u3
     (l, r, hits)
 }
 
-fn plain(p: &[DVec2]) -> Vec<(DVec2, u32)> {
+fn plain(p: &[DVec2]) -> Piece {
     p.iter().map(|v| (*v, NONE)).collect()
 }
 
@@ -361,7 +374,7 @@ fn chamfer(p: &[DVec2], cut: f64) -> Vec<DVec2> {
             continue;
         }
         let bis = (a + b).normalize_or_zero();
-        let at = v + bis * cut * 0.7071;
+        let at = v + bis * cut * std::f64::consts::FRAC_1_SQRT_2;
         out = clip_left(&out, at, -bis.perp());
         if out.len() < 3 {
             return p.to_vec();
@@ -387,7 +400,11 @@ fn obb(p: &[DVec2]) -> (DVec2, DVec2, f64, f64) {
         let a = (x1 - x0) * (y1 - y0);
         if a < best.0 {
             let c = ax * (x0 + x1) * 0.5 + ay * (y0 + y1) * 0.5;
-            best = if x1 - x0 >= y1 - y0 { (a, c, ax, (x1 - x0) * 0.5, (y1 - y0) * 0.5) } else { (a, c, ay, (y1 - y0) * 0.5, (x1 - x0) * 0.5) };
+            best = if x1 - x0 >= y1 - y0 {
+                (a, c, ax, (x1 - x0) * 0.5, (y1 - y0) * 0.5)
+            } else {
+                (a, c, ay, (y1 - y0) * 0.5, (x1 - x0) * 0.5)
+            };
         }
     }
     (best.1, best.2, best.3, best.4)
@@ -486,6 +503,7 @@ impl City {
         DVec2::new(dir.dot(self.east), dir.dot(self.north)) * (planet_radius() / d)
     }
 
+    /// Direction, dans l'espace, du point `p` du plan de la ville (metres vers l'est et le nord).
     pub fn dir_of(&self, p: DVec2) -> DVec3 {
         (self.dir * planet_radius() + self.east * p.x + self.north * p.y).normalize()
     }
@@ -501,6 +519,7 @@ impl City {
         (DVec2::new(q.x / self.shape.0, q.y / self.shape.1)).length() / self.radius
     }
 
+    /// Plan detaille (rues, ilots, batiments) : calcule a la premiere demande, puis garde.
     pub fn plan(&self, gen: &Generator) -> &Plan {
         self.plan.get_or_init(|| Plan::build(self, gen))
     }
@@ -620,7 +639,10 @@ impl City {
         match self.style {
             Style::Grid | Style::Eixample => {
                 let diag = if self.style == Style::Grid { 0.5 } else { 0.9 };
-                (0..4).map(|k| (self.angle + k as f64 * FRAC_PI_2, 0.0)).chain((0..4).map(|k| (self.angle + FRAC_PI_4 + k as f64 * FRAC_PI_2, diag))).collect()
+                (0..4)
+                    .map(|k| (self.angle + k as f64 * FRAC_PI_2, 0.0))
+                    .chain((0..4).map(|k| (self.angle + FRAC_PI_4 + k as f64 * FRAC_PI_2, diag)))
+                    .collect()
             }
             Style::Radial => {
                 let n = self.avenues();
@@ -794,13 +816,13 @@ fn line_gap(a: f64, b: f64) -> f64 {
 
 fn city_name(seed: u64, style: Style) -> String {
     const START: [&str; 24] = [
-        "Val", "Mor", "Bel", "Cor", "Sar", "Lun", "Ar", "Ost", "Mel", "Tor", "Vir", "Cal", "Bra", "Esk", "Ner", "Pal", "Rho", "Sel", "Tal",
-        "Zan", "Ven", "Quel", "Dor", "Lis",
+        "Val", "Mor", "Bel", "Cor", "Sar", "Lun", "Ar", "Ost", "Mel", "Tor", "Vir", "Cal", "Bra", "Esk", "Ner", "Pal",
+        "Rho", "Sel", "Tal", "Zan", "Ven", "Quel", "Dor", "Lis",
     ];
     const MID: [&str; 16] = ["a", "e", "i", "o", "en", "ar", "il", "or", "an", "e", "u", "ol", "ia", "er", "on", "y"];
     const END: [&str; 20] = [
-        "ville", "bourg", "mont", "port", "lac", "nes", "dun", "grad", "polis", "heim", "via", "cia", "ra", "tes", "sac", "rive", "court", "mar",
-        "lon", "zia",
+        "ville", "bourg", "mont", "port", "lac", "nes", "dun", "grad", "polis", "heim", "via", "cia", "ra", "tes",
+        "sac", "rive", "court", "mar", "lon", "zia",
     ];
     let mut rng = Rng(hash_seed(seed, 0x4E4D, 0));
     let pick = |r: &mut Rng, n: usize| (r.f32() * n as f32) as usize % n;
@@ -823,9 +845,9 @@ struct PlanBuilder<'a> {
     city: &'a City,
     rng: Rng,
     roads: Vec<Road>,
-    finals: Vec<Vec<(DVec2, u32)>>,
+    finals: Vec<Piece>,
     /// Morceaux deja attribues a un quartier (la place centrale).
-    fixed: Vec<(Vec<(DVec2, u32)>, Zone)>,
+    fixed: Vec<(Piece, Zone)>,
     /// Pour chaque rue, les rues sur lesquelles elle debouche a chaque bout.
     ends: Vec<[u32; 2]>,
     /// Debouches : (rue interrompue, indice du debouche, rue qui y arrive, bout de celle-ci).
@@ -849,7 +871,17 @@ impl<'a> PlanBuilder<'a> {
         let id = self.roads.len() as u32;
         let walk = walk_for(width);
         let dir = (b.0 - a.0).normalize_or_zero();
-        let mut road = Road { a: a.0, b: b.0, width, walk, trim: [0.0; 2], skew: [0.0; 2], trim_walk: [0.0; 2], gaps: Vec::new(), trees };
+        let mut road = Road {
+            a: a.0,
+            b: b.0,
+            width,
+            walk,
+            trim: [0.0; 2],
+            skew: [0.0; 2],
+            trim_walk: [0.0; 2],
+            gaps: Vec::new(),
+            trees,
+        };
         let cw = (width * 0.5 - walk) as f64;
         for (k, (p, other)) in [a, b].into_iter().enumerate() {
             if other != NONE {
@@ -878,14 +910,18 @@ impl<'a> PlanBuilder<'a> {
     }
 
     /// Trace une rue a travers un morceau de ville.
-    fn cut(&mut self, poly: &[(DVec2, u32)], p: DVec2, d: DVec2, width: f32, trees: bool) -> Option<(Vec<(DVec2, u32)>, Vec<(DVec2, u32)>)> {
+    fn cut(&mut self, poly: &[(DVec2, u32)], p: DVec2, d: DVec2, width: f32, trees: bool) -> Option<(Piece, Piece)> {
         let id = self.roads.len() as u32;
         let (l, r, hits) = split(poly, p, d, id);
         if hits.len() != 2 || l.len() < 3 || r.len() < 3 || (hits[0].0 - hits[1].0).length() < 6.0 {
             return None;
         }
         // Un carrefour trop aigu donne des pointes d'ilots et des chaussees qui se chevauchent.
-        if self.strict && hits.iter().any(|h| h.1 != NONE && self.roads[h.1 as usize].dir().perp_dot(d.normalize_or_zero()).abs() < 0.55) {
+        if self.strict
+            && hits
+                .iter()
+                .any(|h| h.1 != NONE && self.roads[h.1 as usize].dir().perp_dot(d.normalize_or_zero()).abs() < 0.55)
+        {
             return None;
         }
         // Pas de morceau trop mince de part et d'autre.
@@ -897,7 +933,7 @@ impl<'a> PlanBuilder<'a> {
     }
 
     /// Trace une meme droite a travers tous les morceaux qu'elle traverse.
-    fn cut_all(&mut self, pieces: Vec<Vec<(DVec2, u32)>>, p: DVec2, d: DVec2, width: f32, trees: bool) -> Vec<Vec<(DVec2, u32)>> {
+    fn cut_all(&mut self, pieces: Vec<Piece>, p: DVec2, d: DVec2, width: f32, trees: bool) -> Vec<Piece> {
         let mut out = Vec::new();
         for piece in pieces {
             match self.cut(&piece, p, d, width, trees) {
@@ -913,7 +949,13 @@ impl<'a> PlanBuilder<'a> {
 
     fn organic_width(&self, depth: u32, zone: Zone) -> f32 {
         if self.city.size < 0.3 {
-            return if depth < 2 { 12.0 } else if zone == Zone::Old { 6.5 } else { 9.0 };
+            return if depth < 2 {
+                12.0
+            } else if zone == Zone::Old {
+                6.5
+            } else {
+                9.0
+            };
         }
         match (depth, zone) {
             (0..=1, _) => 24.0,
@@ -954,25 +996,56 @@ impl<'a> PlanBuilder<'a> {
             };
             let (rx, ry) = ((x1 - x0) / px, (y1 - y0) / py);
             let (kx, ky) = (pick(x0, x1, px), pick(y0, y1, py));
-            let along_x = match (kx, ky) {
-                (Some(_), Some(_)) => rx >= ry,
-                (Some(_), None) => true,
-                (None, Some(_)) => false,
+            // L'axe retenu, et le rang de la rue sur cet axe.
+            let (along_x, k) = match (kx, ky) {
+                (Some(kx), Some(ky)) => {
+                    if rx >= ry {
+                        (true, kx)
+                    } else {
+                        (false, ky)
+                    }
+                }
+                (Some(k), None) => (true, k),
+                (None, Some(k)) => (false, k),
                 (None, None) => return None,
             };
             let suburb = zone == Zone::Houses;
             return Some(if along_x {
-                let k = kx.unwrap();
                 let w = match city.style {
-                    Style::Grid => if suburb { 20.0 } else { 30.0 },
-                    _ => if k % 6 == 0 { 30.0 } else { 20.0 },
+                    Style::Grid => {
+                        if suburb {
+                            20.0
+                        } else {
+                            30.0
+                        }
+                    }
+                    _ => {
+                        if k % 6 == 0 {
+                            30.0
+                        } else {
+                            20.0
+                        }
+                    }
                 };
                 (ax * (k as f64 * px), ay, w, city.style == Style::Eixample || w >= 30.0)
             } else {
-                let k = ky.unwrap();
                 let w = match city.style {
-                    Style::Grid => if k % 10 == 0 { 30.0 } else if suburb { 13.0 } else { 18.0 },
-                    _ => if k % 6 == 0 { 30.0 } else { 20.0 },
+                    Style::Grid => {
+                        if k % 10 == 0 {
+                            30.0
+                        } else if suburb {
+                            13.0
+                        } else {
+                            18.0
+                        }
+                    }
+                    _ => {
+                        if k % 6 == 0 {
+                            30.0
+                        } else {
+                            20.0
+                        }
+                    }
                 };
                 (ay * (k as f64 * py), ax, w, city.style == Style::Eixample || w >= 30.0)
             });
@@ -1002,10 +1075,14 @@ impl<'a> PlanBuilder<'a> {
         let jitter = if zone == Zone::Old { 0.35 } else { jitter };
         // Faubourgs : des rues dans toutes les directions, des ilots de tailles variees.
         let outskirts = city.extent(centroid(pts)) > city.edge_at(centroid(pts)) * 0.72;
-        let (jitter, spread) = if outskirts && zone != Zone::Old { (f32::max(jitter, 0.3), f32::max(spread, 0.22)) } else { (jitter, spread) };
+        let (jitter, spread) = if outskirts && zone != Zone::Old {
+            (f32::max(jitter, 0.3), f32::max(spread, 0.22))
+        } else {
+            (jitter, spread)
+        };
         let axis_split = if along_major { axis } else { axis.perp() };
         let ext = if along_major { hx } else { hy };
-        let t = self.rng.range(0.5 - spread as f32, 0.5 + spread as f32) as f64;
+        let t = self.rng.range(0.5 - spread, 0.5 + spread) as f64;
         let p = c + axis_split * (ext * (2.0 * t - 1.0));
         let d = rotate(axis_split.perp(), self.rng.range(-jitter, jitter) as f64);
         let w = self.organic_width(depth, zone);
@@ -1015,10 +1092,12 @@ impl<'a> PlanBuilder<'a> {
     /// Ce morceau est-il decoupe par le quadrillage ? Seulement au coeur d'une ville en damier ou a ilots.
     fn on_lattice(&self, pts: &[DVec2], zone: Zone) -> bool {
         let c = centroid(pts);
-        matches!(self.city.style, Style::Grid | Style::Eixample) && zone != Zone::Old && self.city.extent(c) < self.city.edge_at(c) * 0.72
+        matches!(self.city.style, Style::Grid | Style::Eixample)
+            && zone != Zone::Old
+            && self.city.extent(c) < self.city.edge_at(c) * 0.72
     }
 
-    fn subdivide(&mut self, start: Vec<(Vec<(DVec2, u32)>, u32)>) {
+    fn subdivide(&mut self, start: Vec<(Piece, u32)>) {
         let mut stack = start;
         while let Some((poly, depth)) = stack.pop() {
             let pts = points(&poly);
@@ -1051,7 +1130,7 @@ impl<'a> PlanBuilder<'a> {
     }
 
     /// Paris : une place en etoile, des avenues rayonnantes, des boulevards en anneaux.
-    fn radial(&mut self, boundary: &[DVec2]) -> Vec<(Vec<(DVec2, u32)>, u32)> {
+    fn radial(&mut self, boundary: &[DVec2]) -> Vec<(Piece, u32)> {
         let city = self.city;
         let n = city.avenues();
         let plaza = if city.size > 0.5 { 75.0 } else { 55.0 };
@@ -1110,11 +1189,17 @@ impl<'a> PlanBuilder<'a> {
             let mut inner = wedge;
             let mut radii: Vec<f64> = rings.iter().map(|r| r * city.radius).collect();
             radii.push(plaza);
-            radii.sort_by(|a, b| b.partial_cmp(a).unwrap());
+            radii.sort_by(|a, b| b.total_cmp(a));
             for (k, r) in radii.iter().enumerate() {
                 let (p0, p1) = (d0 * *r, d1 * *r);
                 // L'anneau exterieur est le plus large, comme un boulevard peripherique.
-                let w = if *r == plaza { 22.0 } else if k == 0 && rings.len() > 1 { 40.0 } else { 30.0 };
+                let w = if *r == plaza {
+                    22.0
+                } else if k == 0 && rings.len() > 1 {
+                    40.0
+                } else {
+                    30.0
+                };
                 // Le cote exterieur de la corde est a droite quand on va de l'avenue i a l'avenue i + 1.
                 match self.cut(&inner, p0, p1 - p0, w as f32, true) {
                     Some((l, r)) => {
@@ -1141,7 +1226,7 @@ impl<'a> PlanBuilder<'a> {
         };
         let boundary = city.boundary();
         let mut rng = Rng(hash_seed(city.seed, 0x51A7, 0));
-        let start: Vec<(Vec<(DVec2, u32)>, u32)> = match city.style {
+        let start: Vec<(Piece, u32)> = match city.style {
             Style::Radial => self.radial(&boundary),
             Style::Grid => {
                 let mut pieces = vec![plain(&boundary)];
@@ -1209,7 +1294,7 @@ impl<'a> PlanBuilder<'a> {
             None
         };
         let mut block_roads: Vec<Vec<u32>> = Vec::new();
-        let mut pieces: Vec<(Vec<(DVec2, u32)>, Option<Zone>)> = self.finals.drain(..).map(|p| (p, None)).collect();
+        let mut pieces: Vec<(Piece, Option<Zone>)> = self.finals.drain(..).map(|p| (p, None)).collect();
         pieces.extend(self.fixed.drain(..).map(|(p, z)| (p, Some(z))));
         for (k, (poly, fixed)) in pieces.iter().enumerate() {
             let pts = points(poly);
@@ -1250,7 +1335,11 @@ impl<'a> PlanBuilder<'a> {
                 let by: Vec<f64> = poly.iter().map(|v| self.width(v.1) * 0.5).collect();
                 inset(&pts, &by)
             };
-            let shape = if city.style == Style::Eixample && matches!(zone, Zone::Dense | Zone::Tower) { chamfer(&shape, 10.0) } else { shape };
+            let shape = if city.style == Style::Eixample && matches!(zone, Zone::Dense | Zone::Tower) {
+                chamfer(&shape, 10.0)
+            } else {
+                shape
+            };
             if shape.len() < 3 || area(&shape) < 150.0 {
                 continue;
             }
@@ -1272,10 +1361,10 @@ impl<'a> PlanBuilder<'a> {
             probes.filter(|p| wet(*p)).count() * 2 < b.poly.len() + 1
         });
         step("eau des ilots");
-        let mut kept = dry.iter();
-        blocks.retain(|_| *kept.next().unwrap());
-        let mut kept = dry.iter();
-        block_roads.retain(|_| *kept.next().unwrap());
+        let mut kept = dry.iter().copied();
+        blocks.retain(|_| kept.next().unwrap_or(false));
+        let mut kept = dry.iter().copied();
+        block_roads.retain(|_| kept.next().unwrap_or(false));
         let n = self.roads.len();
         // Les rues qui bordent un ilot sont gardees, ainsi que les avenues et les routes des autoroutes.
         let exits = city.exit_lines();
@@ -1368,7 +1457,7 @@ impl<'a> PlanBuilder<'a> {
             for i in (0..n).filter(|&i| keep[i]) {
                 *total.entry(g[i]).or_default() += lengths[i] * if major[i] { 4.0 } else { 1.0 };
             }
-            if let Some((&root, _)) = total.iter().max_by(|a, b| a.1.partial_cmp(b.1).unwrap()) {
+            if let Some((&root, _)) = total.iter().max_by(|a, b| a.1.total_cmp(b.1)) {
                 for i in 0..n {
                     main[i] = keep[i] && g[i] == root;
                 }
@@ -1395,7 +1484,10 @@ impl<'a> PlanBuilder<'a> {
                     let v = v as usize;
                     let step = if keep[v] { 0.0 } else { lengths[v] };
                     let nd = dist[u] + step;
-                    if nd < dist[v] && nd < if bridging { 12_000.0 } else { 1500.0 } && (keep[v] || bridging || !drowned(v)) {
+                    if nd < dist[v]
+                        && nd < if bridging { 12_000.0 } else { 1500.0 }
+                        && (keep[v] || bridging || !drowned(v))
+                    {
                         dist[v] = nd;
                         prev[v] = u as u32;
                         open.push(std::cmp::Reverse((nd.to_bits(), v as u32)));
@@ -1405,7 +1497,7 @@ impl<'a> PlanBuilder<'a> {
             // Le morceau isole le plus proche.
             let Some(target) = (0..n)
                 .filter(|&i| keep[i] && !main[i] && dist[i].is_finite() && (!bridging || exit_road[i]))
-                .min_by(|a, b| dist[*a].partial_cmp(&dist[*b]).unwrap())
+                .min_by(|a, b| dist[*a].total_cmp(&dist[*b]))
             else {
                 if !bridging && (0..n).any(|i| exit_road[i] && keep[i] && !main[i]) {
                     bridging = true;
@@ -1443,10 +1535,10 @@ impl<'a> PlanBuilder<'a> {
         }
         {
             let flags: Vec<bool> = block_roads.iter().map(|rs| rs.iter().any(|r| keep[*r as usize])).collect();
-            let mut it = flags.iter();
-            blocks.retain(|_| *it.next().unwrap());
-            let mut it = flags.iter();
-            block_roads.retain(|_| *it.next().unwrap());
+            let mut it = flags.iter().copied();
+            blocks.retain(|_| it.next().unwrap_or(false));
+            let mut it = flags.iter().copied();
+            block_roads.retain(|_| it.next().unwrap_or(false));
         }
 
         // Une rue de faubourg s'arrete apres la derniere maison : pas de longues routes vides dans les champs.
@@ -1539,7 +1631,7 @@ impl<'a> PlanBuilder<'a> {
             if let Some(b) = blocks
                 .iter_mut()
                 .filter(|b| b.zone == Zone::Old)
-                .min_by(|a, b| centroid(&a.poly).length().partial_cmp(&centroid(&b.poly).length()).unwrap())
+                .min_by(|a, b| centroid(&a.poly).length().total_cmp(&centroid(&b.poly).length()))
             {
                 b.zone = Zone::Plaza;
             }
@@ -1566,15 +1658,36 @@ impl<'a> PlanBuilder<'a> {
 
 impl Plan {
     fn build(city: &City, gen: &Generator) -> Plan {
-        PlanBuilder { city, rng: Rng(hash_seed(city.seed, 0x9A4, 1)), roads: Vec::new(), finals: Vec::new(), fixed: Vec::new(), ends: Vec::new(), links: Vec::new(), strict: false }.build(gen)
+        PlanBuilder {
+            city,
+            rng: Rng(hash_seed(city.seed, 0x9A4, 1)),
+            roads: Vec::new(),
+            finals: Vec::new(),
+            fixed: Vec::new(),
+            ends: Vec::new(),
+            links: Vec::new(),
+            strict: false,
+        }
+        .build(gen)
     }
 
-    fn push(&mut self, foot: [DVec2; 4], kind: Kind, floors: u16, rng: &mut Rng) {
-        self.buildings.push(Building { foot, kind, floors: floors.max(1), seed: rng.next_u64() as u32, row: false });
+    /// Ajoute un batiment et le rend, pour les retouches de l'appelant.
+    fn push(&mut self, foot: [DVec2; 4], kind: Kind, floors: u16, rng: &mut Rng) -> &mut Building {
+        let building = Building { foot, kind, floors: floors.max(1), seed: rng.next_u64() as u32, row: false };
+        self.buildings.push(building);
+        let last = self.buildings.len() - 1;
+        &mut self.buildings[last]
     }
 
     /// Batiments en bordure d'ilot, mitoyens, autour d'une cour.
-    fn perimeter(&mut self, poly: &[DVec2], depth: f64, unit: (f32, f32), rng: &mut Rng, mut kind_floors: impl FnMut(&mut Rng) -> (Kind, u16)) {
+    fn perimeter(
+        &mut self,
+        poly: &[DVec2],
+        depth: f64,
+        unit: (f32, f32),
+        rng: &mut Rng,
+        mut kind_floors: impl FnMut(&mut Rng) -> (Kind, u16),
+    ) {
         let n = poly.len();
         let offset: Vec<(DVec2, DVec2)> = (0..n)
             .map(|i| {
@@ -1583,7 +1696,8 @@ impl Plan {
             })
             .collect();
         // Sommet interieur : croisement des cotes decales voisins.
-        let inner: Vec<Option<DVec2>> = (0..n)
+        // `None` des qu'un coin est degenere (deux cotes voisins paralleles).
+        let inner: Option<Vec<DVec2>> = (0..n)
             .map(|i| {
                 let (p0, d0) = offset[(i + n - 1) % n];
                 let (p1, d1) = offset[i];
@@ -1591,22 +1705,22 @@ impl Plan {
                 (den.abs() > 1e-6).then(|| p0 + d0 * ((p1 - p0).perp_dot(d1) / den))
             })
             .collect();
-        let valid = inner.iter().all(|v| v.is_some()) && {
-            let inner: Vec<DVec2> = inner.iter().map(|v| v.unwrap()).collect();
+        // La cour doit garder le sens de l'ilot et une surface utile.
+        let inner = inner.filter(|inner| {
             (0..n).all(|i| {
                 let (a, b) = (inner[i], inner[(i + 1) % n]);
                 (b - a).dot(poly[(i + 1) % n] - poly[i]) > 1.0
-            }) && area(&inner) > 60.0
-        };
-        if !valid {
+            }) && area(inner) > 60.0
+        });
+        let Some(inner) = inner else {
+            // Ilot trop etroit pour une cour : un seul batiment au milieu.
             let (_, axis, _, _) = obb(poly);
             if let Some(rect) = fit_rect(poly, axis, 0.0) {
                 let (kind, floors) = kind_floors(rng);
                 self.push(rect, kind, floors, rng);
             }
             return;
-        }
-        let inner: Vec<DVec2> = inner.into_iter().map(|v| v.unwrap()).collect();
+        };
         for i in 0..n {
             let (o0, o1, n0, n1) = (poly[i], poly[(i + 1) % n], inner[i], inner[(i + 1) % n]);
             let len = (o1 - o0).length();
@@ -1615,8 +1729,7 @@ impl Plan {
                 let (t0, t1) = (j as f64 / count as f64, (j + 1) as f64 / count as f64);
                 let foot = [o0.lerp(o1, t0), o0.lerp(o1, t1), n0.lerp(n1, t1), n0.lerp(n1, t0)];
                 let (kind, floors) = kind_floors(rng);
-                self.push(foot, kind, floors, rng);
-                self.buildings.last_mut().unwrap().row = true;
+                self.push(foot, kind, floors, rng).row = true;
             }
         }
     }
@@ -1630,13 +1743,11 @@ impl Plan {
                 d.perp_dot(q - a).abs() < 0.6 && (q - a).dot(d) > -0.5 && (q - a).dot(d) < (b - a).length() + 0.5
             })
         };
-        (0..lot.len())
-            .filter(|&i| on_edge(lot[i].lerp(lot[(i + 1) % lot.len()], 0.5)))
-            .max_by(|&a, &b| {
-                let la = (lot[(a + 1) % lot.len()] - lot[a]).length();
-                let lb = (lot[(b + 1) % lot.len()] - lot[b]).length();
-                la.partial_cmp(&lb).unwrap()
-            })
+        (0..lot.len()).filter(|&i| on_edge(lot[i].lerp(lot[(i + 1) % lot.len()], 0.5))).max_by(|&a, &b| {
+            let la = (lot[(a + 1) % lot.len()] - lot[a]).length();
+            let lb = (lot[(b + 1) % lot.len()] - lot[b]).length();
+            la.total_cmp(&lb)
+        })
     }
 
     /// Maisons et jardins : lots dos a dos, le long des rues.
@@ -1684,14 +1795,22 @@ impl Plan {
         let setback = rng.range(3.0, 9.0) as f64;
         // Du pavillon a la grande villa.
         let size = rng.f32();
-        let grow = if size > 0.85 { 1.35 } else if size < 0.2 { 0.8 } else { 1.0 };
+        let grow = if size > 0.85 {
+            1.35
+        } else if size < 0.2 {
+            0.8
+        } else {
+            1.0
+        };
         let w = (rng.range(8.0, 13.0) as f64 * grow).min(frontage - 3.5);
         let d = (rng.range(7.5, 11.5) as f64 * grow).min(depth - setback - 5.0);
         if w < 6.0 || d < 6.0 {
             return;
         }
         let x = 1.5 + (frontage - w - 3.0) * rng.range(0.15, 0.6) as f64;
-        let rect = |x0: f64, y0: f64, x1: f64, y1: f64| [a + ex * x0 + ey * y0, a + ex * x1 + ey * y0, a + ex * x1 + ey * y1, a + ex * x0 + ey * y1];
+        let rect = |x0: f64, y0: f64, x1: f64, y1: f64| {
+            [a + ex * x0 + ey * y0, a + ex * x1 + ey * y0, a + ex * x1 + ey * y1, a + ex * x0 + ey * y1]
+        };
         let fits = |r: &[DVec2; 4]| r.iter().all(|q| inside(lot, *q));
         let home = rect(x, setback, x + w, setback + d);
         if !fits(&home) {
@@ -1743,7 +1862,14 @@ impl Plan {
         let c = centroid(&poly);
         let r = city.extent(c);
         let (_, axis, hx, hy) = obb(&poly);
-        let square = |c: DVec2, half: f64| [c + DVec2::new(-half, -half), c + DVec2::new(half, -half), c + DVec2::new(half, half), c + DVec2::new(-half, half)];
+        let square = |c: DVec2, half: f64| {
+            [
+                c + DVec2::new(-half, -half),
+                c + DVec2::new(half, -half),
+                c + DVec2::new(half, half),
+                c + DVec2::new(-half, half),
+            ]
+        };
         // Caractere de la ville : basse et etalee, ou haute et serree.
         let tall = 0.7 + 0.7 * hash01(city.seed, 0, 99);
         match zone {
@@ -1762,7 +1888,12 @@ impl Plan {
                         let depth = ((rect[3] - rect[0]).length() * 0.5).min(11.0);
                         let ex = (rect[1] - rect[0]).normalize();
                         let ey = ex.perp();
-                        let foot = [mid - ex * half - ey * depth, mid + ex * half - ey * depth, mid + ex * half + ey * depth, mid - ex * half + ey * depth];
+                        let foot = [
+                            mid - ex * half - ey * depth,
+                            mid + ex * half - ey * depth,
+                            mid + ex * half + ey * depth,
+                            mid - ex * half + ey * depth,
+                        ];
                         self.push(foot, Kind::Church, 1, &mut rng);
                     }
                 } else if city.style == Style::Radial && center {
@@ -1775,7 +1906,7 @@ impl Plan {
                 let count = if hx * hy > 2400.0 { 1 + (rng.f32() * 2.4) as usize } else { 1 };
                 let mut lots = vec![poly.clone()];
                 for k in 1..count {
-                    let last = lots.pop().unwrap();
+                    let Some(last) = lots.pop() else { break };
                     let (lc, la, lhx, _) = obb(&last);
                     let t = 1.0 / (count - k + 1) as f64;
                     let (l, rr, _) = split(&plain(&last), lc - la * lhx * (1.0 - 2.0 * t), la.perp(), NONE);
@@ -1793,7 +1924,9 @@ impl Plan {
                     let rb = city.business_distance(c);
                     let closeness = (1.0 - rb / core.max(0.01)).clamp(0.0, 1.0);
                     if rb < core * 0.75 || rng.f32() < 0.3 {
-                        let floors = (22.0 + 78.0 * closeness.powf(1.3) * rng.range(0.5, 1.15) as f64) * (0.6 + 0.4 * city.size as f64) * tall;
+                        let floors = (22.0 + 78.0 * closeness.powf(1.3) * rng.range(0.5, 1.15) as f64)
+                            * (0.6 + 0.4 * city.size as f64)
+                            * tall;
                         let floors = floors.clamp(16.0, 120.0);
                         let shrink = |r: &[DVec2; 4], k: f64| {
                             let c = (r[0] + r[2]) * 0.5;
@@ -1807,7 +1940,12 @@ impl Plan {
                         } else if roll < 0.6 {
                             // Gradins : chaque etage de la tour plus etroit que le precedent (art deco, zoning de 1916).
                             self.push(rect, Kind::Office, (floors * rng.range(0.25, 0.4) as f64) as u16, &mut rng);
-                            self.push(shrink(&rect, 0.78), Kind::Office, (floors * rng.range(0.5, 0.65) as f64) as u16, &mut rng);
+                            self.push(
+                                shrink(&rect, 0.78),
+                                Kind::Office,
+                                (floors * rng.range(0.5, 0.65) as f64) as u16,
+                                &mut rng,
+                            );
                             self.push(shrink(&rect, 0.56), Kind::Tower, floors as u16, &mut rng);
                         } else if roll < 0.75 && lhx_ok(&rect) {
                             // Deux tours jumelles sur le meme lot.
@@ -1827,7 +1965,8 @@ impl Plan {
             }
             Zone::Dense => {
                 let classic = matches!(city.style, Style::Radial | Style::Eixample);
-                let depth = if city.style == Style::Eixample { rng.range(17.0, 22.0) } else { rng.range(12.0, 16.0) } as f64;
+                let depth =
+                    if city.style == Style::Eixample { rng.range(17.0, 22.0) } else { rng.range(12.0, 16.0) } as f64;
                 let base = ((5.0 + (1.0 - r) * 5.0) * tall) as f32;
                 let office = city.business_distance(c) < city.downtown() * 1.5;
                 self.perimeter(&poly, depth, if classic { (13.0, 20.0) } else { (16.0, 30.0) }, &mut rng, |rng| {
@@ -1847,7 +1986,9 @@ impl Plan {
             }
             Zone::Old => {
                 let depth = rng.range(9.0, 12.5) as f64;
-                self.perimeter(&poly, depth, (6.0, 10.5), &mut rng, |rng| (Kind::Townhouse, rng.range(2.0, 4.99) as u16 + 1));
+                self.perimeter(&poly, depth, (6.0, 10.5), &mut rng, |rng| {
+                    (Kind::Townhouse, rng.range(2.0, 4.99) as u16 + 1)
+                });
             }
             Zone::Houses => {
                 let style = (hash01(city.seed, bi as i64, 3) * 3.0) as u8;
@@ -1941,6 +2082,7 @@ impl Plan {
         out
     }
 
+    /// Clotures dont le milieu est dans le rectangle [`min`, `max`[ du plan.
     pub fn fences_in(&self, min: DVec2, max: DVec2) -> impl Iterator<Item = &Fence> {
         self.fences.iter().filter(move |f| {
             let m = (f.a + f.b) * 0.5;
@@ -1966,7 +2108,11 @@ impl Plan {
             if off < carriage && s >= r.cut(0, x) && s <= len - r.cut(1, x) {
                 return Ground::Road;
             }
-            if off >= carriage && s >= r.trim_walk[0] as f64 && s <= len - r.trim_walk[1] as f64 && !r.in_gap_side(s as f32, x.signum() as f32) {
+            if off >= carriage
+                && s >= r.trim_walk[0] as f64
+                && s <= len - r.trim_walk[1] as f64
+                && !r.in_gap_side(s as f32, x.signum() as f32)
+            {
                 walk = true;
             }
         }
@@ -2076,8 +2222,14 @@ fn zone_paint(z: Zone) -> [f32; 3] {
 }
 
 impl Cities {
+    /// Aucune ville : pour une planete deserte, ou pendant sa construction.
     pub fn empty() -> Self {
-        Self { list: Vec::new(), buckets: FastMap::default(), highways: Highways::empty(), circuits: super::circuit::Circuits::empty() }
+        Self {
+            list: Vec::new(),
+            buckets: FastMap::default(),
+            highways: Highways::empty(),
+            circuits: super::circuit::Circuits::empty(),
+        }
     }
 
     /// Choisit les sites : des terres basses et peu accidentees, au climat doux, pres d'une cote ou
@@ -2130,7 +2282,8 @@ impl Cities {
                                 continue;
                             }
                             let w = gen.provinces.at(dir);
-                            let rough = w.karst + w.dunes + w.glacial + w.badlands * 0.7 + w.mesa * 0.6 + w.inselberg * 0.3;
+                            let rough =
+                                w.karst + w.dunes + w.glacial + w.badlands * 0.7 + w.mesa * 0.6 + w.inselberg * 0.3;
                             if rough > 0.8 {
                                 continue;
                             }
@@ -2138,10 +2291,12 @@ impl Cities {
                             if center.height < center.water_level + 2.0 {
                                 continue;
                             }
-                            let (mut lo, mut hi, mut coast, mut river) = (center.height, center.height, 0.0f64, center.valley as f64);
+                            let (mut lo, mut hi, mut coast, mut river) =
+                                (center.height, center.height, 0.0f64, center.valley as f64);
                             // Deux couronnes de sondes : une ville veut un site plat sur toute son etendue.
                             for k in 0..12 {
-                                let s = gen.surface_detail(probe(dir, k, if k % 2 == 0 { 1500.0 } else { 3500.0 }), &coarse);
+                                let s = gen
+                                    .surface_detail(probe(dir, k, if k % 2 == 0 { 1500.0 } else { 3500.0 }), &coarse);
                                 lo = lo.min(s.height);
                                 hi = hi.max(s.height);
                                 river = river.max(s.valley as f64 * 0.8);
@@ -2154,7 +2309,9 @@ impl Cities {
                                 continue;
                             }
                             let mild = 1.0 - ((c.temperature as f64 - 0.62).abs() * 2.0).min(1.0);
-                            let score = 1.0 + coast * 1.1 + river.min(1.0) * 1.4 + mild * 0.6 - rough as f64 * 1.5 - range / 70.0
+                            let score = 1.0 + coast * 1.1 + river.min(1.0) * 1.4 + mild * 0.6
+                                - rough as f64 * 1.5
+                                - range / 70.0
                                 + hash01(seed ^ 0xC17, i as i64, 0) * 0.8;
                             out.push((score, dir, coast));
                         }
@@ -2162,9 +2319,9 @@ impl Cities {
                     })
                 })
                 .collect();
-            handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
+            handles.into_iter().flat_map(crate::sync::join).collect()
         });
-        candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        candidates.sort_by(|a, b| b.0.total_cmp(&a.0));
         step("sites");
 
         // Ecart entre deux villes : 140 km pour 140 villes sur une planete comme la Terre ; plus serre
@@ -2181,9 +2338,20 @@ impl Cities {
                 }
                 let k = chosen.len() as f64 / wanted as f64;
                 // Quelques metropoles, des villes moyennes, beaucoup de petites villes.
-                let size = if k < 0.07 { 1.0 } else if k < 0.28 { 0.7 } else if k < 0.85 { 0.4 } else { 0.18 };
+                let size = if k < 0.07 {
+                    1.0
+                } else if k < 0.28 {
+                    0.7
+                } else if k < 0.85 {
+                    0.4
+                } else {
+                    0.18
+                };
                 let mine = if size > 0.9 { metro_gap } else { gap };
-                if chosen.iter().any(|c| c.0.dot(dir) > (mine.max(if c.1 > 0.9 { metro_gap } else { 0.0 }) / planet_radius()).cos()) {
+                if chosen
+                    .iter()
+                    .any(|c| c.0.dot(dir) > (mine.max(if c.1 > 0.9 { metro_gap } else { 0.0 }) / planet_radius()).cos())
+                {
                     continue;
                 }
                 chosen.push((dir, size, coast));
@@ -2200,9 +2368,27 @@ impl Cities {
             let id = hash_seed(seed, 0xC1, k as i64);
             let roll = hash01(id, 5, 0);
             let style = match size {
-                s if s > 0.9 => if roll < 0.45 { Style::Grid } else if roll < 0.75 { Style::Radial } else { Style::Eixample },
-                s if s > 0.5 => [Style::Grid, Style::Eixample, Style::Radial, Style::Medieval][(roll * 4.0) as usize % 4],
-                s if s > 0.3 => if roll < 0.5 { Style::Medieval } else if roll < 0.8 { Style::Grid } else { Style::Radial },
+                s if s > 0.9 => {
+                    if roll < 0.45 {
+                        Style::Grid
+                    } else if roll < 0.75 {
+                        Style::Radial
+                    } else {
+                        Style::Eixample
+                    }
+                }
+                s if s > 0.5 => {
+                    [Style::Grid, Style::Eixample, Style::Radial, Style::Medieval][(roll * 4.0) as usize % 4]
+                }
+                s if s > 0.3 => {
+                    if roll < 0.5 {
+                        Style::Medieval
+                    } else if roll < 0.8 {
+                        Style::Grid
+                    } else {
+                        Style::Radial
+                    }
+                }
                 _ => Style::Medieval,
             };
             // Les rues d'une ville de cote suivent le rivage.
@@ -2261,7 +2447,10 @@ impl Cities {
 
     /// Villes qui touchent un disque (centre, rayon en metres).
     pub fn touching(&self, dir: DVec3, radius: f64) -> Vec<&City> {
-        self.list.iter().filter(|c| c.dir.dot(dir) > ((c.radius * 1.3 + radius) / planet_radius()).min(3.0).cos()).collect()
+        self.list
+            .iter()
+            .filter(|c| c.dir.dot(dir) > ((c.radius * 1.3 + radius) / planet_radius()).min(3.0).cos())
+            .collect()
     }
 
     /// Part de relief aplani par une ville, de 0 a 1.
@@ -2359,10 +2548,12 @@ impl Cities {
             .map(|i| &plan.roads[i as usize])
             .filter(|road| road.length() > 30.0)
             .map(|road| {
-                let s = (p - road.a).dot(road.dir()).clamp(road.trim[0] as f64 + 5.0, road.length() - road.trim[1] as f64 - 5.0);
+                let s = (p - road.a)
+                    .dot(road.dir())
+                    .clamp(road.trim[0] as f64 + 5.0, road.length() - road.trim[1] as f64 - 5.0);
                 road.a + road.dir() * s
             })
-            .min_by(|a, b| (*a - p).length().partial_cmp(&(*b - p).length()).unwrap())?;
+            .min_by(|a, b| (*a - p).length().total_cmp(&(*b - p).length()))?;
         Some(c.dir_of(best))
     }
 
@@ -2382,7 +2573,8 @@ impl Cities {
                 let deck = super::city_mesh::road_deck(plan, c, gen, ri);
                 let lift = super::city_mesh::deck_lift(&deck, s);
                 if lift > 0.05 {
-                    let axis = gen.surface_detail(c.dir_of(r.a + d * s), &Detail::for_spacing(super::city_mesh::DECK_STEP));
+                    let axis =
+                        gen.surface_detail(c.dir_of(r.a + d * s), &Detail::for_spacing(super::city_mesh::DECK_STEP));
                     return Some(axis.height as f64 + lift);
                 }
             }
@@ -2409,7 +2601,9 @@ impl Cities {
                     continue;
                 }
                 let d = r.dir();
-                let s = (p - r.a).dot(d).clamp(r.trim[0] as f64 + 4.0, (len - r.trim[1] as f64 - 4.0).max(r.trim[0] as f64 + 4.0));
+                let s = (p - r.a)
+                    .dot(d)
+                    .clamp(r.trim[0] as f64 + 4.0, (len - r.trim[1] as f64 - 4.0).max(r.trim[0] as f64 + 4.0));
                 let q = r.a + d * s;
                 let dist = (q - p).length();
                 if dist > reach || best.is_some_and(|b| b.2 <= dist) {
@@ -2432,7 +2626,7 @@ impl Cities {
             .iter()
             .enumerate()
             .map(|(i, c)| (i, c.dir.dot(dir).clamp(-1.0, 1.0).acos() * planet_radius()))
-            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+            .min_by(|a, b| a.1.total_cmp(&b.1))
     }
 }
 
@@ -2535,7 +2729,9 @@ mod tests {
             // Quelques debouches en biais de Pallac (planete 3), pour les verifier a l'oeil.
             let city = gen.cities.list.iter().find(|c| c.name.starts_with("Pallac")).unwrap();
             let plan = city.plan(&gen);
-            for r in plan.roads.iter().filter(|r| r.skew[0].abs() > 0.5 && r.skew[0].abs() < 2.0 && r.trim[0] > 5.0).take(4) {
+            for r in
+                plan.roads.iter().filter(|r| r.skew[0].abs() > 0.5 && r.skew[0].abs() < 2.0 && r.trim[0] > 5.0).take(4)
+            {
                 let p = r.a + r.dir() * r.trim[0] as f64;
                 let (lat, lon) = crate::world::generator::dir_to_lat_lon(city.dir_of(p));
                 let yaw = (-r.dir().x).atan2(r.dir().y).to_degrees();
@@ -2544,7 +2740,12 @@ mod tests {
         }
         assert!(ends > 200 && skewed > 20, "{ends} debouches dont {skewed} en biais");
         // Quelques bouts touchent des places ou des rues retirees ensuite : tolerance de 2 %.
-        assert!(gaps.len() * 50 < ends * 6, "{} trous sur {ends} debouches : {:?}", gaps.len(), &gaps[..gaps.len().min(6)]);
+        assert!(
+            gaps.len() * 50 < ends * 6,
+            "{} trous sur {ends} debouches : {:?}",
+            gaps.len(),
+            &gaps[..gaps.len().min(6)]
+        );
     }
 
     #[test]

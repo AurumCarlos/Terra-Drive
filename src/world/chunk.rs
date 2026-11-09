@@ -2,7 +2,7 @@
 //! et construction de leurs maillages.
 
 use super::city_mesh::{build_city_mesh, CityMesh, Terrain};
-use super::generator::{smoothstep, Detail, Generator, Surface, planet_radius};
+use super::generator::{planet_radius, smoothstep, Detail, Generator, Surface};
 use bytemuck::{Pod, Zeroable};
 use glam::DVec3;
 
@@ -35,10 +35,12 @@ pub struct NodeId {
 }
 
 impl NodeId {
+    /// Le noeud qui couvre toute la face `face` du cube (0 a 5).
     pub fn root(face: u8) -> Self {
         Self { face, lod: MAX_LOD, x: 0, z: 0 }
     }
 
+    /// Les six noeuds racines : la planete entiere au plus grossier.
     pub fn roots() -> [Self; 6] {
         std::array::from_fn(|f| Self::root(f as u8))
     }
@@ -53,6 +55,7 @@ impl NodeId {
         self.size() / GRID as f64
     }
 
+    /// Les quatre noeuds deux fois plus fins qui couvrent celui-ci. Le noeud ne doit pas etre une feuille (`lod` > 0).
     pub fn children(&self) -> [NodeId; 4] {
         let (face, lod) = (self.face, self.lod - 1);
         let (x, z) = (self.x * 2, self.z * 2);
@@ -91,7 +94,8 @@ impl NodeId {
 
     /// Le noeud d'un LOD donne qui contient une direction.
     pub fn containing(dir: DVec3, lod: u8) -> NodeId {
-        let inside = |id: &NodeId| id.locate(dir).is_some_and(|(s, t)| (0.0..=1.0).contains(&s) && (0.0..=1.0).contains(&t));
+        let inside =
+            |id: &NodeId| id.locate(dir).is_some_and(|(s, t)| (0.0..=1.0).contains(&s) && (0.0..=1.0).contains(&t));
         let mut id = Self::roots().into_iter().find(inside).unwrap_or(Self::root(0));
         while id.lod > lod {
             let children = id.children();
@@ -100,6 +104,7 @@ impl NodeId {
         id
     }
 
+    /// Direction du centre du noeud, depuis le centre de la planete.
     pub fn center_dir(&self) -> DVec3 {
         self.dir_at(0.5, 0.5)
     }
@@ -239,6 +244,8 @@ fn morph_of(points: &dyn Fn(i32, i32) -> DVec3, i: usize, j: usize) -> DVec3 {
     target - p
 }
 
+/// Calcule le maillage du noeud `id` : relief, couleurs, eau, et la ville qui s'y trouve.
+/// Long (quelques millisecondes) : a appeler depuis un thread de generation.
 pub fn build_chunk(gen: &Generator, id: NodeId) -> ChunkMesh {
     let n = GRID;
     let detail = Detail::for_spacing(id.spacing());
@@ -290,18 +297,21 @@ pub fn build_chunk(gen: &Generator, id: NodeId) -> ChunkMesh {
             // Une berge de riviere ou de lac a bien moins de sable qu'une plage de mer.
             let above = if surface.fresh {
                 // De loin, une berge est plus etroite que la maille : elle ne doit pas la colorer entiere.
-                let far = if y > surface.water_level { smoothstep(30.0, 200.0, id.spacing() as f32) * 10.0 } else { 0.0 };
+                let far =
+                    if y > surface.water_level { smoothstep(30.0, 200.0, id.spacing() as f32) * 10.0 } else { 0.0 };
                 (y - surface.water_level) * 3.0 + (1.0 - surface.bank) * 10.0 + far
             } else {
                 y - surface.water_level
             };
             // Courbure locale, sans unite : assombrit les creux et ramene du vert dans les vallees.
-            let around = heights[at(ii - 1, jj)] + heights[at(ii + 1, jj)] + heights[at(ii, jj - 1)] + heights[at(ii, jj + 1)];
+            let around =
+                heights[at(ii - 1, jj)] + heights[at(ii + 1, jj)] + heights[at(ii, jj - 1)] + heights[at(ii, jj + 1)];
             let concavity = ((around - 4.0 * y) / id.spacing() as f32 * 0.7).clamp(-1.0, 1.0);
             let normal_y = normal.dot(dir) as f32;
             let site = gen.site(dir);
             let ground = gen.ground_color_at(dir, &site, above, normal_y, climate, concavity, surface.ridge);
-            let (col, canopy) = gen.with_canopy_at(ground, dir, &site.w, above, normal_y, climate, surface.ridge, id.spacing());
+            let (col, canopy) =
+                gen.with_canopy_at(ground, dir, &site.w, above, normal_y, climate, surface.ridge, id.spacing());
             // Le sol des villes : chaussees, trottoirs, cours et jardins ; de loin, la teinte des quartiers.
             let (col, canopy) = match gen.cities.paint(dir, id.spacing(), gen) {
                 Some((paint, k)) => (std::array::from_fn(|c| col[c] + (paint[c] - col[c]) * k), canopy * (1.0 - k)),
@@ -400,7 +410,12 @@ pub fn build_chunk(gen: &Generator, id: NodeId) -> ChunkMesh {
                     pos: pos.as_vec3().to_array(),
                     morph: morph.as_vec3().to_array(),
                     normal: dir.as_vec3().to_array(),
-                    color: [(depth * 255.0) as u8, (gen.sea_ice(climate) * 255.0) as u8, code(flow.dot(east)), code(flow.dot(north))],
+                    color: [
+                        (depth * 255.0) as u8,
+                        (gen.sea_ice(climate) * 255.0) as u8,
+                        code(flow.dot(east)),
+                        code(flow.dot(north)),
+                    ],
                     rock: [0; 4],
                     altitude: surface_level,
                 });
@@ -458,9 +473,9 @@ mod tests {
         for &i in &idx {
             let i = i as usize;
             if i < row * row {
-                assert!((i % row) % 2 == 0 && (i / row) % 2 == 0, "sommet impair {i}");
+                assert!((i % row).is_multiple_of(2) && (i / row).is_multiple_of(2), "sommet impair {i}");
             } else {
-                assert!((i - row * row) % 2 == 0 && i - row * row < 4 * GRID);
+                assert!((i - row * row).is_multiple_of(2) && i - row * row < 4 * GRID);
             }
         }
     }
@@ -512,15 +527,14 @@ mod tests {
         let g = gen();
         let meshes: Vec<_> = NodeId::roots().iter().map(|r| build_chunk(&g, *r)).collect();
         let row = GRID + 1;
-        let world = |m: &ChunkMesh, i: usize| {
-            m.center + DVec3::from_array(m.vertices[i].pos.map(|c| c as f64))
-        };
+        let world = |m: &ChunkMesh, i: usize| m.center + DVec3::from_array(m.vertices[i].pos.map(|c| c as f64));
         for (f, m) in meshes.iter().enumerate() {
             for i in 0..row {
                 let p = world(m, i);
-                let found = meshes.iter().enumerate().any(|(o, other)| {
-                    o != f && (0..row * row).any(|k| (world(other, k) - p).length() < 1.5)
-                });
+                let found = meshes
+                    .iter()
+                    .enumerate()
+                    .any(|(o, other)| o != f && (0..row * row).any(|k| (world(other, k) - p).length() < 1.5));
                 assert!(found, "face {f}, point {i} sans voisin");
             }
         }

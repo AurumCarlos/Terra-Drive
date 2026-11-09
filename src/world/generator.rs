@@ -93,10 +93,46 @@ pub struct PlanetParams {
     pub rivers: bool,
 }
 
+/// Ramene `value` dans `[min, max]` ; une valeur qui n'est pas un nombre devient `default`.
+fn bounded(value: f32, min: f32, max: f32, default: f32) -> f32 {
+    if value.is_nan() {
+        default
+    } else {
+        value.clamp(min, max)
+    }
+}
+
 impl PlanetParams {
+    /// Bornes de la part d'ocean.
+    pub const OCEAN: (f32, f32) = (0.0, 1.0);
+    /// Bornes du multiplicateur de relief.
+    pub const RELIEF: (f32, f32) = (0.0, 4.0);
+    /// Bornes du decalage de climat.
+    pub const TEMPERATURE: (f32, f32) = (-1.0, 1.0);
+    /// Bornes du rayon, relatif a celui de la Terre.
+    pub const SIZE: (f32, f32) = (0.1, 4.0);
+    /// Nombre maximal de villes : au-dela, la simulation des routes prend des minutes.
+    pub const MAX_CITIES: u32 = 600;
+
     /// Rayon en metres.
     pub fn radius(&self) -> f64 {
-        EARTH_RADIUS * self.size.clamp(0.1, 4.0) as f64
+        EARTH_RADIUS * bounded(self.size, Self::SIZE.0, Self::SIZE.1, 1.0) as f64
+    }
+
+    /// Les memes reglages, ramenes dans leurs bornes ; une valeur qui n'est pas un nombre reprend
+    /// celle par defaut. Tout reglage venu de l'exterieur (ligne de commande, menu) passe par ici :
+    /// un rayon nul ou infini, ou des milliards de villes, bloqueraient la generation.
+    pub fn sanitized(self) -> Self {
+        let d = Self::default();
+        Self {
+            seed: self.seed,
+            ocean: bounded(self.ocean, Self::OCEAN.0, Self::OCEAN.1, d.ocean),
+            relief: bounded(self.relief, Self::RELIEF.0, Self::RELIEF.1, d.relief),
+            temperature: bounded(self.temperature, Self::TEMPERATURE.0, Self::TEMPERATURE.1, d.temperature),
+            size: bounded(self.size, Self::SIZE.0, Self::SIZE.1, d.size),
+            cities: self.cities.min(Self::MAX_CITIES),
+            rivers: self.rivers,
+        }
     }
 }
 
@@ -185,9 +221,12 @@ const SLOPE_EPS: f64 = 700.0;
 const SLOPE_LATTICES: [(f64, f64); 1] = [(175.0, 60.0)];
 const SLOPE_CACHE_SIZE: usize = 8192;
 
+/// Une case du cache de pente : (planete, x, y, z) et la pente a ce noeud.
+type SlopeNode = ((u64, i64, i64, i64), Vec3);
+
 thread_local! {
-    /// Noeuds de la grille de pente deja calcules sur ce thread : (planete, x, y, z) -> pente.
-    static SLOPE_CACHE: std::cell::RefCell<Vec<((u64, i64, i64, i64), Vec3)>> =
+    /// Noeuds de la grille de pente deja calcules sur ce thread.
+    static SLOPE_CACHE: std::cell::RefCell<Vec<SlopeNode>> =
         std::cell::RefCell::new(vec![((u64::MAX, 0, 0, 0), Vec3::ZERO); SLOPE_CACHE_SIZE]);
 }
 
@@ -197,7 +236,8 @@ thread_local! {
 const SHARED_SHARDS: usize = 64;
 const SHARED_SHARD_SIZE: usize = 4096;
 type SlopeKey = (u64, i64, i64, i64);
-static SHARED_SLOPES: std::sync::OnceLock<Vec<std::sync::Mutex<super::fast_hash::FastMap<SlopeKey, Vec3>>>> = std::sync::OnceLock::new();
+static SHARED_SLOPES: std::sync::OnceLock<Vec<std::sync::Mutex<super::fast_hash::FastMap<SlopeKey, Vec3>>>> =
+    std::sync::OnceLock::new();
 
 fn shared_slopes() -> &'static [std::sync::Mutex<super::fast_hash::FastMap<SlopeKey, Vec3>>] {
     SHARED_SLOPES.get_or_init(|| (0..SHARED_SHARDS).map(|_| Default::default()).collect())
@@ -218,6 +258,7 @@ fn octaves(wavelength: f64, spacing: f64, max: u32) -> u32 {
 }
 
 impl Detail {
+    /// Le detail utile pour des sommets espaces de `spacing` metres.
     pub fn for_spacing(spacing: f64) -> Self {
         Self {
             mountains: octaves(2.6e4, spacing, 5),
@@ -237,6 +278,7 @@ impl Detail {
         }
     }
 
+    /// Tout le detail : pour la physique et le placement des objets.
     pub fn full() -> Self {
         Self::for_spacing(1.0)
     }
@@ -318,10 +360,7 @@ impl ClimateNoise<'_> {
         let band = (lat.clamp(-1.0, 1.0).asin() * 6.0).cos() * 0.2;
         let carried = self.wet.sample_linear(dir).clamp(0.0, 1.0);
         let m = 0.2 + carried.powf(0.7) * 0.55 + self.moisture.fbm(at / 2.5e6, 5) * 0.6 + band;
-        Climate {
-            temperature: (t - height.max(0.0) / 7000.0).clamp(0.0, 1.0),
-            moisture: m.clamp(0.0, 1.0),
-        }
+        Climate { temperature: (t - height.max(0.0) / 7000.0).clamp(0.0, 1.0), moisture: m.clamp(0.0, 1.0) }
     }
 
     /// Pluie, 1 en moyenne : les reliefs arretent les nuages, les deserts ne recoivent presque rien.
@@ -378,12 +417,13 @@ pub fn par_map<T: Send>(n: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
                 })
             })
             .collect();
-        handles.into_iter().flat_map(|h| h.join().expect("calcul parallele")).collect()
+        handles.into_iter().flat_map(crate::sync::join).collect()
     });
     parts.sort_unstable_by_key(|p| p.0);
     parts.into_iter().flat_map(|p| p.1).collect()
 }
 
+/// Passage en douceur de 0 a 1 quand `x` va de `a` a `b`. `a` et `b` doivent etre differents.
 pub fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
     let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
@@ -403,7 +443,11 @@ fn plate_count(seed: u64) -> usize {
 }
 
 impl Generator {
+    /// Simule la planete decrite par `params` (ramenes dans leurs bornes) : plaques, relief, eau,
+    /// climat, villes et routes. Quelques secondes de calcul sur tous les coeurs ; deterministe pour
+    /// une graine donnee.
     pub fn new(params: PlanetParams) -> Self {
+        let params = params.sanitized();
         // Toute la simulation se fait au rayon de la nouvelle planete, meme si une autre est affichee.
         let previous = CREATING.with(|c| c.0.get());
         set_creating_radius(params.radius());
@@ -434,7 +478,8 @@ impl Generator {
             let climate = ClimateNoise { temperature: &temperature, moisture: &moisture, wet: &wet, params };
             let water = Hydrology::build(&params, &plates, &|dir, height| climate.rain(dir, height));
             step("eau");
-            let provinces = Provinces::build(params.seed, &water.elevation, &orogeny, &|dir, height| climate.at(dir, height));
+            let provinces =
+                Provinces::build(params.seed, &water.elevation, &orogeny, &|dir, height| climate.at(dir, height));
             step("provinces");
             (water, provinces)
         };
@@ -475,6 +520,7 @@ impl Generator {
         gen
     }
 
+    /// Graine de la planete.
     pub fn seed(&self) -> u64 {
         self.params.seed
     }
@@ -484,6 +530,7 @@ impl Generator {
         self.height_detail(dir, &Detail::full())
     }
 
+    /// Hauteur au-dessus du niveau de la mer, avec le detail `d` seulement.
     pub fn height_detail(&self, dir: DVec3, d: &Detail) -> f32 {
         self.surface_detail(dir, d).height
     }
@@ -525,22 +572,41 @@ impl Generator {
             // Aretes secondaires et pics : plus vives en altitude, ou la glace a sculpte la roche
             // (multifractale hybride de Musgrave : le detail suit la hauteur deja acquise).
             if d.alps > 0 {
-                let spur = self.mountains.ridged(bent / 6500.0 + DVec3::splat(71.0), d.alps, (d.spacing / 6500.0) as f32).clamp(0.0, 1.0);
+                let spur = self
+                    .mountains
+                    .ridged(bent / 6500.0 + DVec3::splat(71.0), d.alps, (d.spacing / 6500.0) as f32)
+                    .clamp(0.0, 1.0);
                 h += m * spur * (250.0 + 950.0 * crest) * self.params.relief;
             }
         }
         // Le relief varie de region en region : de vraies plaines, mais rares, et des pays bosseles.
         let rugged = (self.warp[2].fbm(q / 7.0e4 + DVec3::splat(11.0), 2) * 1.6 + 0.6).clamp(0.0, 1.0);
         let foothills = smoothstep(0.1, 0.5, o);
-        let swell = w.hills * 620.0 + w.glacial * 300.0 + w.moor * 210.0 + w.badlands * 90.0 + w.mesa * 70.0 + w.karst * 40.0 + w.inselberg * 170.0 + w.dunes * 30.0 + foothills * 380.0 + 120.0 + 260.0 * rugged;
+        let swell = w.hills * 620.0
+            + w.glacial * 300.0
+            + w.moor * 210.0
+            + w.badlands * 90.0
+            + w.mesa * 70.0
+            + w.karst * 40.0
+            + w.inselberg * 170.0
+            + w.dunes * 30.0
+            + foothills * 380.0
+            + 120.0
+            + 260.0 * rugged;
         if d.rolling > 0 {
             // Bruit amorti par sa propre pente (Quilez) : fonds de vallee doux, cretes plus nettes, comme apres l'erosion.
-            let r = self.rolling.fbm(bent / 9000.0, d.rolling) * 0.5 + self.rolling.eroded(bent / 9000.0, d.rolling) * 0.5;
+            let r =
+                self.rolling.fbm(bent / 9000.0, d.rolling) * 0.5 + self.rolling.eroded(bent / 9000.0, d.rolling) * 0.5;
             h += (r + 0.55) * swell * land * (1.0 - 0.6 * m) * self.params.relief;
         }
         if d.knolls > 0 {
             let k = self.hills.eroded(bent / 2400.0 + DVec3::splat(29.0), d.knolls);
-            h += (k + 0.3) * (25.0 + 120.0 * rugged + 60.0 * w.hills + 50.0 * foothills) * land * (1.0 - 0.5 * m) * (1.0 - 0.8 * w.dunes) * self.params.relief;
+            h += (k + 0.3)
+                * (25.0 + 120.0 * rugged + 60.0 * w.hills + 50.0 * foothills)
+                * land
+                * (1.0 - 0.5 * m)
+                * (1.0 - 0.8 * w.dunes)
+                * self.params.relief;
         }
         if let Some((v, share)) = self.volcanoes.at(at) {
             h += (v.summit - h).max(0.0) * share;
@@ -593,11 +659,11 @@ impl Generator {
                     (k2, v) if k2 == key => v,
                     _ => {
                         let shard = &shared_slopes()[(h >> 58) as usize % SHARED_SHARDS];
-                        let known = shard.lock().unwrap().get(&key).copied();
+                        let known = crate::sync::lock(shard).get(&key).copied();
                         let v = known.unwrap_or_else(|| {
                             let at = (DVec3::new(key.1 as f64, key.2 as f64, key.3 as f64) * size).normalize();
                             let v = self.gully_slope(at, &Detail::full(), &self.provinces.at(at));
-                            let mut map = shard.lock().unwrap();
+                            let mut map = crate::sync::lock(shard);
                             if map.len() >= SHARED_SHARD_SIZE {
                                 map.clear();
                             }
@@ -608,7 +674,9 @@ impl Generator {
                         v
                     }
                 };
-                let weight = (if a == 1 { f.x } else { 1.0 - f.x }) * (if b == 1 { f.y } else { 1.0 - f.y }) * (if c == 1 { f.z } else { 1.0 - f.z });
+                let weight = (if a == 1 { f.x } else { 1.0 - f.x })
+                    * (if b == 1 { f.y } else { 1.0 - f.y })
+                    * (if c == 1 { f.z } else { 1.0 - f.z });
                 sum += value * weight;
             }
         });
@@ -667,7 +735,16 @@ impl Generator {
         // Ravines : le relief se creuse selon sa pente, de la grande vallee a la rigole.
         let foothills = smoothstep(0.1, 0.5, o);
         let carve = m
-            + (1.0 - m) * (w.hills * 0.72 + w.glacial * 0.9 + w.moor * 0.42 + w.badlands * 0.3 + w.mesa * 0.14 + w.inselberg * 0.4 + w.karst * 0.2 + w.dunes * 0.02).max(foothills * 0.45);
+            + (1.0 - m)
+                * (w.hills * 0.72
+                    + w.glacial * 0.9
+                    + w.moor * 0.42
+                    + w.badlands * 0.3
+                    + w.mesa * 0.14
+                    + w.inselberg * 0.4
+                    + w.karst * 0.2
+                    + w.dunes * 0.02)
+                    .max(foothills * 0.45);
         let carve = (carve + volcano.min(0.4) * 1.6).min(1.0) * rises * relief.sqrt();
         if d.gullies > 0 && carve > 1e-4 {
             // De pres, la pente vient d'une grille fixe mise en cache : le meme champ pour tous les chunks.
@@ -691,7 +768,8 @@ impl Generator {
             let f = f.max(0.0) * relief;
             // Une falaise plus etroite que le maillage y ferait des dents de scie : elle s'elargit avec lui.
             let wide = d.spacing as f32 * 0.5;
-            let stepped = terrace(f, 240.0, (wide / 240.0).max(0.16)) * 0.74 + terrace(f, 62.0, (wide / 62.0).max(0.28)) * 0.26;
+            let stepped =
+                terrace(f, 240.0, (wide / 240.0).max(0.16)) * 0.74 + terrace(f, 62.0, (wide / 62.0).max(0.28)) * 0.26;
             h += stepped * smoothstep(0.08, 0.5, mesa);
         }
 
@@ -700,9 +778,12 @@ impl Generator {
         if bad > 0.01 && d.tables > 1 {
             let (value, grad) = self.badland.d3(q / 2400.0);
             let slope = (grad - up * grad.dot(up)) * (300.0 / 2400.0);
-            let eroded = self.gullies.erosion(p + DVec3::splat(991.0), up, slope, 1100.0, d.gullies.saturating_sub(2), 0.2, 0.8);
+            let eroded =
+                self.gullies.erosion(p + DVec3::splat(991.0), up, slope, 1100.0, d.gullies.saturating_sub(2), 0.2, 0.8);
             let f = ((value + 0.5) * 300.0 + eroded.offset).max(0.0);
-            h += (terrace(f, 34.0, (d.spacing as f32 / 68.0).max(0.3)) * 0.7 + f * 0.3) * smoothstep(0.1, 0.5, bad) * relief;
+            h += (terrace(f, 34.0, (d.spacing as f32 / 68.0).max(0.3)) * 0.7 + f * 0.3)
+                * smoothstep(0.1, 0.5, bad)
+                * relief;
             out.ridge = out.ridge * (1.0 - bad) + eroded.ridge * bad;
         }
 
@@ -723,7 +804,8 @@ impl Generator {
         let karst = w.karst * shore * (1.0 - m);
         if karst > 0.01 {
             let bump = if d.spacing < 200.0 { self.warp_at(p * 22.0) * 130.0 } else { DVec3::ZERO };
-            let tower = self.towers.towers((p + bump) / 1250.0, 0.8, 0.66, 0.5, 120.0, 380.0) + self.towers.towers((p + bump) / 470.0 + DVec3::splat(7.0), 0.5, 0.6, 0.5, 30.0, 90.0);
+            let tower = self.towers.towers((p + bump) / 1250.0, 0.8, 0.66, 0.5, 120.0, 380.0)
+                + self.towers.towers((p + bump) / 470.0 + DVec3::splat(7.0), 0.5, 0.6, 0.5, 30.0, 90.0);
             h += tower * smoothstep(0.2, 0.6, karst);
         }
 
@@ -734,8 +816,10 @@ impl Generator {
             // Une paroi de roche nue, puis un dome : les memes mailles, donc les memes rochers, pour les deux profils.
             // Les mailles sont en 3D et la surface n'en coupe qu'une tranche : il faut des rochers larges pour qu'ils affleurent.
             let (cell, small_cell) = (q / 8000.0, q / 2600.0 + DVec3::splat(19.0));
-            let great = self.towers.towers(cell, 0.75, 0.44, 0.12, 200.0, 330.0) + self.towers.towers(cell, 0.75, 0.44, 0.95, 90.0, 190.0);
-            let small = self.towers.towers(small_cell, 0.45, 0.4, 0.15, 20.0, 70.0) + self.towers.towers(small_cell, 0.45, 0.4, 0.95, 10.0, 50.0);
+            let great = self.towers.towers(cell, 0.75, 0.44, 0.12, 200.0, 330.0)
+                + self.towers.towers(cell, 0.75, 0.44, 0.95, 90.0, 190.0);
+            let small = self.towers.towers(small_cell, 0.45, 0.4, 0.15, 20.0, 70.0)
+                + self.towers.towers(small_cell, 0.45, 0.4, 0.95, 10.0, 50.0);
             h += (great + small) * smoothstep(0.04, 0.3, plainsman);
         }
         let open_land = plain * (1.0 - w.dunes) * (1.0 - w.karst) * (1.0 - w.inselberg);
@@ -745,19 +829,27 @@ impl Generator {
         }
         let moor = (w.moor + w.hills * 0.15 + w.inselberg * 0.3) * plain;
         if moor > 0.01 && d.spacing < 120.0 {
-            h += self.towers.towers((p + DVec3::splat(77.0)) / 340.0, 0.34, 0.6, 0.5, 7.0, 30.0) * smoothstep(0.05, 0.4, moor);
+            h += self.towers.towers((p + DVec3::splat(77.0)) / 340.0, 0.34, 0.6, 0.5, 7.0, 30.0)
+                * smoothstep(0.05, 0.4, moor);
         }
 
         // Aiguilles marines le long des cotes rocheuses.
         if (-90.0..12.0).contains(&base) {
             let coast = 1.0 - smoothstep(-2.0, 12.0, base);
-            h += self.towers.towers((p + DVec3::splat(13.0)) / 620.0, 0.3, 0.42, 0.4, 28.0, 80.0) * smoothstep(-90.0, -30.0, base) * coast * smoothstep(0.45, 0.75, self.provinces.palette.sample_linear(dir));
+            h += self.towers.towers((p + DVec3::splat(13.0)) / 620.0, 0.3, 0.42, 0.4, 28.0, 80.0)
+                * smoothstep(-90.0, -30.0, base)
+                * coast
+                * smoothstep(0.45, 0.75, self.provinces.palette.sample_linear(dir));
         }
 
         // Le detail de pres : mottes et rochers, moins presents sur les sols de sable.
         let plain_detail = 1.0 - w.dunes * 0.9;
         if d.hills > 0 {
-            h += self.hills.eroded(p / 420.0, d.hills) * (15.0 + 15.0 * w.hills) * (0.25 + 0.75 * land) * shore * plain_detail;
+            h += self.hills.eroded(p / 420.0, d.hills)
+                * (15.0 + 15.0 * w.hills)
+                * (0.25 + 0.75 * land)
+                * shore
+                * plain_detail;
         }
 
         // Vallees glaciaires : un fond plat, des flancs raides. Sous le niveau de la mer pres des cotes : fjords.
@@ -789,11 +881,13 @@ impl Generator {
             if let Some((center, t, roll)) = self.ponds.pivot(cells, POND_RADIUS) {
                 let at = center.normalize();
                 let w_at = self.provinces.at(at);
-                let share = (w_at.moor * 0.95 + w_at.glacial * 0.6 + w_at.hills * 0.14 + w_at.karst * 0.2) * (1.0 - smoothstep(0.1, 0.4, self.orogeny.sample_linear(at)) * 0.5);
+                let share = (w_at.moor * 0.95 + w_at.glacial * 0.6 + w_at.hills * 0.14 + w_at.karst * 0.2)
+                    * (1.0 - smoothstep(0.1, 0.4, self.orogeny.sample_linear(at)) * 0.5);
                 if roll < share && self.cities.flatten(at) <= 0.0 {
                     let level = self.pond_level(at, &w_at);
                     if level > 3.0 {
-                        let target = if t < 0.3 { level + (0.3 - t) * 34.0 } else { level - smoothstep(0.3, 0.55, t) * 14.0 };
+                        let target =
+                            if t < 0.3 { level + (0.3 - t) * 34.0 } else { level - smoothstep(0.3, 0.55, t) * 14.0 };
                         let blend = smoothstep(0.0, 0.26, t);
                         h = lerp(h, target, blend);
                         smooth = blend;
@@ -828,7 +922,9 @@ impl Generator {
         }
 
         // Rivieres : un cone de pente autour du lit taille les versants, quelle que soit leur hauteur.
-        if let Some(river) = self.water.river_at(bent, d.spacing, 1.0 + (MAX_WIDEN - 1.0) * smoothstep(0.06, 0.5, o).max(mesa)) {
+        if let Some(river) =
+            self.water.river_at(bent, d.spacing, 1.0 + (MAX_WIDEN - 1.0) * smoothstep(0.06, 0.5, o).max(mesa))
+        {
             out.paint = river.paint;
             out.bank = out.bank.max(river.bank);
             out.valley = river.valley;
@@ -858,10 +954,13 @@ impl Generator {
         out
     }
 
+    /// Temperature et humidite (0 a 1) a l'altitude `height` au-dessus du lieu `dir`.
     pub fn climate(&self, dir: DVec3, height: f32) -> Climate {
-        ClimateNoise { temperature: &self.temperature, moisture: &self.moisture, wet: &self.wet, params: self.params }.at(dir, height)
+        ClimateNoise { temperature: &self.temperature, moisture: &self.moisture, wet: &self.wet, params: self.params }
+            .at(dir, height)
     }
 
+    /// Le biome le plus proche de ce climat.
     pub fn biome(&self, c: Climate) -> Biome {
         let mut best = (Biome::Grassland, f32::MAX);
         for (b, t, m, _) in BIOMES {
@@ -947,7 +1046,16 @@ impl Generator {
         self.surface_color_at(dir, &self.site(dir), above, normal_y, c, ridge)
     }
 
-    pub fn surface_color_at(&self, dir: DVec3, site: &Site, above: f32, normal_y: f32, c: Climate, ridge: f32) -> [f32; 3] {
+    /// Comme [`Generator::surface_color`], avec le `site` deja calcule par l'appelant.
+    pub fn surface_color_at(
+        &self,
+        dir: DVec3,
+        site: &Site,
+        above: f32,
+        normal_y: f32,
+        c: Climate,
+        ridge: f32,
+    ) -> [f32; 3] {
         let mut sum = [0.0; 3];
         let mut total = 0.0;
         for (_, t, m, col) in BIOMES {
@@ -1055,22 +1163,48 @@ impl Generator {
 
     /// Part d'arbres aux couleurs d'automne, de 0 a 1.
     pub fn autumn(&self, dir: DVec3, c: Climate) -> f32 {
-        self.provinces.autumn.sample_linear(dir) * smoothstep(0.26, 0.36, c.temperature) * (1.0 - smoothstep(0.58, 0.68, c.temperature))
+        self.provinces.autumn.sample_linear(dir)
+            * smoothstep(0.26, 0.36, c.temperature)
+            * (1.0 - smoothstep(0.58, 0.68, c.temperature))
     }
 
     /// Fonce le sol sous les forets. Vu de loin, ou les arbres ne sont plus dessines,
     /// le sol prend la couleur de la canopee : la foret reste visible jusqu'a l'horizon.
     /// Rend aussi la part de foret en ce point, dont le shader tire la texture des cimes.
-    pub fn with_canopy(&self, col: [f32; 3], dir: DVec3, above: f32, normal_y: f32, c: Climate, ridge: f32, spacing: f64) -> ([f32; 3], f32) {
+    pub fn with_canopy(
+        &self,
+        col: [f32; 3],
+        dir: DVec3,
+        above: f32,
+        normal_y: f32,
+        c: Climate,
+        ridge: f32,
+        spacing: f64,
+    ) -> ([f32; 3], f32) {
         self.with_canopy_at(col, dir, &self.provinces.at(dir), above, normal_y, c, ridge, spacing)
     }
 
+    /// Comme [`Generator::with_canopy`], avec la province `w` deja calculee par l'appelant.
     #[allow(clippy::too_many_arguments)]
-    pub fn with_canopy_at(&self, col: [f32; 3], dir: DVec3, w: &Province, above: f32, normal_y: f32, c: Climate, ridge: f32, spacing: f64) -> ([f32; 3], f32) {
+    pub fn with_canopy_at(
+        &self,
+        col: [f32; 3],
+        dir: DVec3,
+        w: &Province,
+        above: f32,
+        normal_y: f32,
+        c: Climate,
+        ridge: f32,
+        spacing: f64,
+    ) -> ([f32; 3], f32) {
         // Les massifs sont trop petits pour une grille large : on prend leur moyenne.
         let woods = if spacing < 100.0 { self.woods(dir) } else { 0.5 };
         let open = 1.0 - w.dunes.max(w.badlands) * 0.95;
-        let cover = self.tree_cover(self.biome(c), woods, c.temperature) * self.forest_share(dir, ridge) * open * smoothstep(0.72, 0.82, normal_y) * smoothstep(1.5, 5.0, above);
+        let cover = self.tree_cover(self.biome(c), woods, c.temperature)
+            * self.forest_share(dir, ridge)
+            * open
+            * smoothstep(0.72, 0.82, normal_y)
+            * smoothstep(1.5, 5.0, above);
         let far = smoothstep(4.0, 60.0, spacing as f32);
         let strength = cover * lerp(0.3, 0.92, far);
         let green = mix3([0.042, 0.078, 0.024], [0.016, 0.042, 0.022], self.stand(dir));
@@ -1080,14 +1214,33 @@ impl Generator {
 
     /// Couleur finale du sol : ajoute a `surface_color` les nuances d'herbe seche ou fraiche
     /// et l'ombre des creux. `concavity` va de -1 (crete) a 1 (fond de vallee).
-    pub fn ground_color(&self, dir: DVec3, above: f32, normal_y: f32, c: Climate, concavity: f32, ridge: f32) -> [f32; 3] {
+    pub fn ground_color(
+        &self,
+        dir: DVec3,
+        above: f32,
+        normal_y: f32,
+        c: Climate,
+        concavity: f32,
+        ridge: f32,
+    ) -> [f32; 3] {
         self.ground_color_at(dir, &self.site(dir), above, normal_y, c, concavity, ridge)
     }
 
+    /// Comme [`Generator::ground_color`], avec le `site` deja calcule par l'appelant.
     #[allow(clippy::too_many_arguments)]
-    pub fn ground_color_at(&self, dir: DVec3, site: &Site, above: f32, normal_y: f32, c: Climate, concavity: f32, ridge: f32) -> [f32; 3] {
+    pub fn ground_color_at(
+        &self,
+        dir: DVec3,
+        site: &Site,
+        above: f32,
+        normal_y: f32,
+        c: Climate,
+        concavity: f32,
+        ridge: f32,
+    ) -> [f32; 3] {
         let mut col = self.surface_color_at(dir, site, above, normal_y, c, ridge);
-        let plants = smoothstep(0.15, 0.45, c.temperature) * smoothstep(2.0, 6.0, above) * smoothstep(0.7, 0.86, normal_y);
+        let plants =
+            smoothstep(0.15, 0.45, c.temperature) * smoothstep(2.0, 6.0, above) * smoothstep(0.7, 0.86, normal_y);
         if plants > 0.0 {
             let wide = self.tint.fbm(dir * planet_radius() / 1.5e4 + DVec3::splat(11.0), 3) * 1.6;
             let dry = (self.tint.fbm(dir * planet_radius() / 2400.0, 4) * 1.5 + wide + 0.5).clamp(0.0, 1.0);
@@ -1113,7 +1266,8 @@ impl Generator {
         let edges = &self.water.edges;
         let step = (edges.len() / 500).max(1);
         for edge in edges.iter().step_by(step) {
-            if !(12.0..150.0).contains(&edge.width[0]) || !(50.0..1100.0).contains(&edge.level[0]) || edge.slope > 0.02 {
+            if !(12.0..150.0).contains(&edge.width[0]) || !(50.0..1100.0).contains(&edge.level[0]) || edge.slope > 0.02
+            {
                 continue;
             }
             let middle = self.water.edge_points(edge)[1];
@@ -1164,9 +1318,12 @@ impl Generator {
             }
             let shore = first as f64 * STEP;
             let beyond = shore + run as f64 * STEP;
-            let peak = (0..24).map(|k| self.water.elevation.sample(along(dir, toward, beyond + k as f64 * 6000.0))).fold(0.0f32, f32::max);
+            let peak = (0..24)
+                .map(|k| self.water.elevation.sample(along(dir, toward, beyond + k as f64 * 6000.0)))
+                .fold(0.0f32, f32::max);
             // L'ideal : assez d'eau pour le reflet du soleil, des montagnes derriere, un autre rivage visible.
-            let score = (run as f32 * 2.0).min(14.0) + peak.min(2600.0) / 260.0 - (run as f32 * 2.0 - 40.0).max(0.0) * 0.2;
+            let score =
+                (run as f32 * 2.0).min(14.0) + peak.min(2600.0) / 260.0 - (run as f32 * 2.0 - 40.0).max(0.0) * 0.2;
             ranked.push((score, dir, toward, shore));
         }
         ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
@@ -1176,7 +1333,10 @@ impl Generator {
         for (_, dir, toward, shore) in ranked.into_iter().take(250) {
             let mut d = (shore - 3000.0).max(0.0);
             let end = shore + 1500.0;
-            while d < end && { let s = self.surface(along(dir, toward, d)); s.height >= s.water_level - 0.2 } {
+            while d < end && {
+                let s = self.surface(along(dir, toward, d));
+                s.height >= s.water_level - 0.2
+            } {
                 d += 25.0;
             }
             if d >= end {
@@ -1203,10 +1363,8 @@ impl Generator {
                 }
                 // Un sol de prairie, et presque aucun arbre jusqu'a la rive.
                 let sparse = |p: DVec3, height: f32| {
-                    {
-                        let c = self.climate(p, height);
-                        self.tree_cover(self.biome(c), self.woods(p), c.temperature) < 0.06
-                    }
+                    let c = self.climate(p, height);
+                    self.tree_cover(self.biome(c), self.woods(p), c.temperature) < 0.06
                 };
                 if !sparse(spot, s.height) {
                     continue;
@@ -1295,7 +1453,7 @@ impl Generator {
         std::thread::scope(|s| {
             for (k, chunk) in image.chunks_mut(w * 3 * rows).enumerate() {
                 s.spawn(move || {
-                crate::world::generator::worker_thread(radius);
+                    crate::world::generator::worker_thread(radius);
                     for (i, px) in chunk.chunks_mut(3).enumerate() {
                         let (x, y) = (i % w, i / w + k * rows);
                         let lat = (0.5 - (y as f64 + 0.5) / h as f64) * 180.0;
@@ -1339,7 +1497,11 @@ impl Generator {
         }
         // Les autoroutes en rouge, les villes en blanc.
         for hw in &self.cities.highways.list {
-            for p in hw.points().iter().step_by(((10_000.0 * 2048.0 / w as f64) / super::highway::POINT_STEP).max(1.0) as usize) {
+            for p in hw
+                .points()
+                .iter()
+                .step_by(((10_000.0 * 2048.0 / w as f64) / super::highway::POINT_STEP).max(1.0) as usize)
+            {
                 stamp(*p, [215, 45, 30]);
             }
         }
@@ -1365,7 +1527,8 @@ impl Generator {
     }
 
     /// Point de depart sans riviere : a terre, plat, tempere. Retombe sur le meilleur point sec.
-    pub fn find_inland_spawn(&self) -> DVec3 {        let golden = std::f64::consts::PI * (3.0 - 5f64.sqrt());
+    pub fn find_inland_spawn(&self) -> DVec3 {
+        let golden = std::f64::consts::PI * (3.0 - 5f64.sqrt());
         let count = 6000;
         // Le lieu qui remplit le plus de criteres, n'importe quel point sec a defaut.
         const PERFECT: u32 = 13;
@@ -1454,6 +1617,32 @@ pub fn dir_to_lat_lon(dir: DVec3) -> (f64, f64) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn sanitized_params_stay_in_bounds_and_drop_nan() {
+        let wild = PlanetParams {
+            seed: 9,
+            ocean: f32::NAN,
+            relief: f32::INFINITY,
+            temperature: -40.0,
+            size: 0.0,
+            cities: u32::MAX,
+            rivers: false,
+        };
+        let p = wild.sanitized();
+        let d = PlanetParams::default();
+        assert_eq!((p.seed, p.rivers), (9, false));
+        assert_eq!(p.ocean, d.ocean, "NaN reprend la valeur par defaut");
+        assert_eq!(p.relief, PlanetParams::RELIEF.1);
+        assert_eq!(p.temperature, PlanetParams::TEMPERATURE.0);
+        assert_eq!(p.size, PlanetParams::SIZE.0);
+        assert_eq!(p.cities, PlanetParams::MAX_CITIES);
+        assert!(p.radius().is_finite() && p.radius() > 0.0);
+        // Un rayon qui n'est pas un nombre ne se propage pas.
+        assert!(PlanetParams { size: f32::NAN, ..d }.radius().is_finite());
+        // Des reglages valides ne changent pas.
+        assert_eq!(d.sanitized(), d);
+    }
+
     /// Un thread de calcul au rayon de la planete affichee ne passe pas par sa variable de thread :
     /// sous Windows, elle coutait plus que le reste et bloquait le calcul parallele.
     #[test]
@@ -1503,7 +1692,11 @@ mod tests {
             }
         }
         let mean = sum_angle / n as f32;
-        println!("grille {} m : ecart de cap moyen {mean:.2} deg, pire {worst:.1} deg, ecart relatif moyen {:.3}", SLOPE_LATTICES[level].0, rel / n as f32);
+        println!(
+            "grille {} m : ecart de cap moyen {mean:.2} deg, pire {worst:.1} deg, ecart relatif moyen {:.3}",
+            SLOPE_LATTICES[level].0,
+            rel / n as f32
+        );
         assert!(mean < 2.0 && rel / (n as f32) < 0.05, "cap {mean} deg");
     }
 
@@ -1519,7 +1712,8 @@ mod tests {
         for lod in [3u8, 9] {
             let id = NodeId::containing(spawn, lod);
             let d = Detail::for_spacing(id.spacing());
-            let dirs: Vec<_> = (0..51 * 51).map(|k| id.dir_at((k % 51) as f64 / 48.0, (k / 51) as f64 / 48.0)).collect();
+            let dirs: Vec<_> =
+                (0..51 * 51).map(|k| id.dir_at((k % 51) as f64 / 48.0, (k / 51) as f64 / 48.0)).collect();
             let time = |name: &str, f: &dyn Fn(DVec3) -> f32| {
                 let t = std::time::Instant::now();
                 let mut acc = 0.0f32;
@@ -1539,8 +1733,14 @@ mod tests {
             let w = gen.provinces.at(spawn);
             time("shape", &|p| gen.shape(p, &d, &w).height);
             let coarse = d.coarse(700.0);
-            time("shape grossier x4", &|p| (0..4).map(|k| gen.shape(p + DVec3::splat(k as f64 * 1e-5), &coarse, &w).height).sum());
-            time("ravines", &|p| gen.gullies.erosion(p * planet_radius(), p.as_vec3(), Vec3::X * 0.1, GULLY_PERIOD, d.gullies, 0.0, 1.0).offset);
+            time("shape grossier x4", &|p| {
+                (0..4).map(|k| gen.shape(p + DVec3::splat(k as f64 * 1e-5), &coarse, &w).height).sum()
+            });
+            time("ravines", &|p| {
+                gen.gullies
+                    .erosion(p * planet_radius(), p.as_vec3(), Vec3::X * 0.1, GULLY_PERIOD, d.gullies, 0.0, 1.0)
+                    .offset
+            });
             time("meandres", &|p| gen.meander_point(p, &d).x as f32);
             time("lacs", &|p| gen.water.lake_at(p).0);
             time("rivieres", &|p| gen.water.river_at(p, d.spacing, 1.0).map_or(0.0, |r| r.level));
@@ -1551,7 +1751,10 @@ mod tests {
             time("tours", &|p| gen.towers.towers(p * planet_radius() / 7000.0, 0.16, 0.45, 0.95, 50.0, 190.0));
             println!();
             println!("  detail {:?}", (d.mountains, d.alps, d.rolling, d.knolls, d.gullies, d.tables, d.hills, d.fine));
-            println!("  provinces au depart : collines {:.2} glaciaire {:.2} landes {:.2} mesa {:.2}", w.hills, w.glacial, w.moor, w.mesa);
+            println!(
+                "  provinces au depart : collines {:.2} glaciaire {:.2} landes {:.2} mesa {:.2}",
+                w.hills, w.glacial, w.moor, w.mesa
+            );
         }
     }
 

@@ -5,20 +5,29 @@ use glam::DVec2;
 use terra::world::city::{Ground, Zone};
 use terra::world::generator::{dir_to_lat_lon, Generator, PlanetParams};
 
-fn main() {
+fn main() -> terra::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let seed: u64 = args.first().and_then(|s| s.parse().ok()).unwrap_or(3);
     let gen = Generator::new(PlanetParams { seed, ..Default::default() });
     let Some(rank) = args.get(1).and_then(|s| s.parse::<usize>().ok()) else {
         for (i, c) in gen.cities.list.iter().enumerate().take(40) {
             let (lat, lon) = dir_to_lat_lon(c.dir);
-            println!("{i:3} {:<16} {:?} taille {:.2} rayon {:.1} km  {lat:.3},{lon:.3}", c.name, c.style, c.size, c.radius / 1000.0);
+            println!(
+                "{i:3} {:<16} {:?} taille {:.2} rayon {:.1} km  {lat:.3},{lon:.3}",
+                c.name,
+                c.style,
+                c.size,
+                c.radius / 1000.0
+            );
         }
         println!("{} villes", gen.cities.list.len());
-        return;
+        return Ok(());
     };
     let out = args.get(2).cloned().unwrap_or_else(|| "plan.png".into());
-    let city = &gen.cities.list[rank];
+    let Some(city) = gen.cities.list.get(rank) else {
+        eprintln!("rang {rank} : la planete {seed} n'a que {} villes", gen.cities.list.len());
+        std::process::exit(2);
+    };
     let t = std::time::Instant::now();
     let plan = city.plan(&gen);
     println!(
@@ -37,7 +46,7 @@ fn main() {
             continue;
         }
         let deck = terra::world::city_mesh::deck_profile(city, &gen, r);
-        if let Some((k, lift)) = deck.iter().enumerate().max_by(|a, b| a.1.partial_cmp(b.1).unwrap()) {
+        if let Some((k, lift)) = deck.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)) {
             if *lift > 3.0 {
                 let p = r.a + r.dir() * (k as f64 * terra::world::city_mesh::DECK_STEP);
                 let (lat, lon) = dir_to_lat_lon(city.dir_of(p - r.dir() * 70.0));
@@ -52,7 +61,8 @@ fn main() {
     let mut image = vec![0u8; size * size * 3];
     for y in 0..size {
         for x in 0..size {
-            let p = DVec2::new((x as f64 / size as f64 * 2.0 - 1.0) * half, (1.0 - y as f64 / size as f64 * 2.0) * half);
+            let p =
+                DVec2::new((x as f64 / size as f64 * 2.0 - 1.0) * half, (1.0 - y as f64 / size as f64 * 2.0) * half);
             let c = match plan.ground(p) {
                 Ground::Road => [40, 40, 44],
                 Ground::Walk => [150, 145, 135],
@@ -69,16 +79,17 @@ fn main() {
                 Ground::Park => [70, 140, 60],
                 Ground::Wild => {
                     let s = gen.surface(city.dir_of(p));
-                    if s.height < s.water_level { [40, 90, 160] } else { [140, 150, 110] }
+                    if s.height < s.water_level {
+                        [40, 90, 160]
+                    } else {
+                        [140, 150, 110]
+                    }
                 }
             };
             image[(y * size + x) * 3..][..3].copy_from_slice(&c);
         }
     }
-    let file = std::fs::File::create(&out).expect("fichier de sortie");
-    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), size as u32, size as u32);
-    enc.set_color(png::ColorType::Rgb);
-    enc.set_depth(png::BitDepth::Eight);
-    enc.write_header().unwrap().write_image_data(&image).unwrap();
+    terra::write_png(std::path::Path::new(&out), size as u32, size as u32, png::ColorType::Rgb, &image)?;
     println!("plan : {out}");
+    Ok(())
 }
