@@ -1,0 +1,6 @@
+/target
+/shots/
+*.png
+*.wav
+*.log
+*.log.err
