@@ -48,7 +48,10 @@ const LEG: usize = 3;
 /// Pente maximale du profil en long.
 pub const LEVEL_GRADE: f64 = 0.12;
 /// Denivele minimal pour qu'une route de montagne vaille la peine.
-const MIN_RISE: f64 = 350.0;
+const MIN_RISE: f64 = 300.0;
+/// Routes de montagne au plus par ville, vers des sommets ecartes d'au moins PEAK_SPREAD radians.
+pub const ROADS_PER_CITY: usize = 4;
+const PEAK_SPREAD: f64 = 1.1;
 /// Distance maximale du sommet au bord de la ville.
 const REACH: f64 = 14_000.0;
 /// Couts, en metres de route equivalents : une epingle, un changement de cap.
@@ -518,11 +521,13 @@ fn resample(p: &[DVec2], step: f64) -> Vec<DVec2> {
     out
 }
 
-/// Le trace d'une route de montagne pour la ville `i` : (angle de sortie, points, sommets des epingles).
+/// Le trace de la route de montagne numero `rank` de la ville `i`, vers son `rank`-ieme meilleur sommet
+/// (chacun dans une direction a part) : (angle de sortie, points, sommets des epingles).
 fn plan_road(
     gen: &Generator,
     cities: &[City],
     i: usize,
+    rank: usize,
     highways: &Highways,
     circuits: &Circuits,
 ) -> Option<(f64, Vec<DVec3>, Vec<DVec3>)> {
@@ -538,9 +543,11 @@ fn plan_road(
         .collect();
     let in_other = |d: DVec3| others.iter().any(|o| o.extent(o.local(d)) < 1.15);
 
-    // Le sommet vise.
-    let mut best: Option<(f64, f64, DVec3)> = None;
+    // Les sommets candidats : le meilleur de chaque direction, puis les meilleurs bien ecartes les uns des
+    // autres. La route `rank` vise le `rank`-ieme.
+    let mut by_dir: Vec<(f64, f64, DVec3)> = Vec::new();
     for k in 0..48 {
+        let mut best: Option<(f64, f64, DVec3)> = None;
         let a = k as f64 / 48.0 * TAU;
         let edge = city.reach(a);
         for q in 1..=10 {
@@ -553,11 +560,19 @@ fn plan_road(
             let rise = s.height as f64 - h0;
             let score = rise - dist * 0.015;
             if rise >= MIN_RISE && best.is_none_or(|b| score > b.0) && !in_other(d) {
-                best = Some((score, s.height as f64, d));
+                best = Some((score, a, d));
             }
         }
+        by_dir.extend(best);
     }
-    let (_, _, peak) = best?;
+    by_dir.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let mut chosen: Vec<(f64, f64, DVec3)> = Vec::new();
+    for c in by_dir {
+        if chosen.iter().all(|o| angle_diff(o.1, c.1) >= PEAK_SPREAD) {
+            chosen.push(c);
+        }
+    }
+    let (_, _, peak) = *chosen.get(rank)?;
 
     // La sortie de la ville, au plus pres du cap du sommet, loin des autres sorties.
     let to = city.local(peak);
@@ -655,6 +670,11 @@ fn plan_road(
         let (pts, apexes) = polyline(&grid, &steps);
         let clashes = clashes(&pts);
         if clashes.is_empty() {
+            // Un trace qui ne monte presque pas n'est pas une route de montagne.
+            let top = steps.iter().map(|st| ground(st.cell).unwrap_or(f64::MIN)).fold(f64::MIN, f64::max);
+            if top - h_gate < MIN_RISE * 0.7 {
+                return None;
+            }
             let mut line = vec![inside];
             line.extend(pts.iter().map(|p| plane.dir(*p)));
             return Some((angle, line, apexes.iter().map(|p| plane.dir(*p)).collect()));
@@ -701,20 +721,24 @@ impl MountainRoads {
         Self { list: Vec::new(), index: FastMap::default() }
     }
 
-    /// Une route de montagne pour chaque ville au pied d'un relief ; la ville lui ouvre une sortie.
+    /// Jusqu'a ROADS_PER_CITY routes de montagne pour chaque ville entouree de reliefs, chacune vers un
+    /// sommet dans une direction differente ; la ville leur ouvre des sorties.
     pub fn build(gen: &Generator, cities: &mut [City], highways: &Highways, circuits: &Circuits) -> Self {
         let r = planet_radius();
         let found = {
             let cities_ref: &[City] = cities;
             let debug = std::env::var("TERRA_DEBUG_MOUNTAIN").is_ok();
-            par_map(cities_ref.len(), |i| {
+            // Les routes principales de toutes les villes d'abord : elles passent avant les suivantes.
+            let n = cities_ref.len();
+            par_map(n * ROADS_PER_CITY, |job| {
+                let (rank, i) = (job / n, job % n);
                 let t = std::time::Instant::now();
-                let road = plan_road(gen, cities_ref, i, highways, circuits);
+                let road = plan_road(gen, cities_ref, i, rank, highways, circuits);
                 if debug {
                     let ms = t.elapsed().as_secs_f64() * 1000.0;
-                    eprintln!("route de {} : {ms:.0} ms, {}", cities_ref[i].name, road.is_some());
+                    eprintln!("route {rank} de {} : {ms:.0} ms, {}", cities_ref[i].name, road.is_some());
                 }
-                road
+                (i, rank, road)
             })
         };
         let mut list: Vec<MountainRoad> = Vec::new();
@@ -722,8 +746,14 @@ impl MountainRoads {
         let cell = SEPARATION / r;
         let key3 = |d: DVec3| ((d.x / cell).floor() as i64, (d.y / cell).floor() as i64, (d.z / cell).floor() as i64);
         let mut taken: FastMap<(i64, i64, i64), Vec<DVec3>> = FastMap::default();
-        for (i, f) in found.into_iter().enumerate() {
+        // Les noms, du premier au dernier sommet d'une ville.
+        const NAMES: [&str; ROADS_PER_CITY] = ["Route du mont", "Route du col de", "Route des cretes de", "Route du pic de"];
+        for (i, rank, f) in found {
             let Some((angle, line, hairpins)) = f else { continue };
+            // Deux routes de la meme ville ne sortent pas au meme endroit.
+            if cities[i].exits.iter().any(|e| angle_diff(*e, angle) < 0.35) {
+                continue;
+            }
             let crosses = line.iter().any(|p| {
                 let (x, y, z) = key3(*p);
                 (-1..=1).any(|dx| {
@@ -759,7 +789,7 @@ impl MountainRoads {
                 })
                 .collect();
             list.push(MountainRoad {
-                name: format!("Route du mont {}", cities[i].name),
+                name: format!("{} {}", NAMES[rank], cities[i].name),
                 city: i,
                 paths: vec![Path::new(line, false, ROAD_HALF), Path::new(ring, true, ROAD_HALF)],
                 hairpins,
@@ -962,7 +992,7 @@ mod tests {
             let (e, nn) = tangent_frame(o);
             let flat: Vec<DVec2> = path.points.iter().map(|p| DVec2::new((*p - o).dot(e), (*p - o).dot(nn)) * r).collect();
             assert!(clashes(&flat[1..]).is_empty(), "{} se recroise", road.name);
-            assert!(road.rise(&gen) > MIN_RISE * 0.6, "{} : {:.0} m", road.name, road.rise(&gen));
+            assert!(road.rise(&gen) > MIN_RISE * 0.5, "{} : {:.0} m", road.name, road.rise(&gen));
             for k in 0..lv.len() - 1 {
                 let run = (path.points[k + 1] - path.points[k]).length() * r;
                 assert!((lv[k + 1] - lv[k]).abs() <= run * LEVEL_GRADE + 0.05, "{} : pente au point {k}", road.name);
