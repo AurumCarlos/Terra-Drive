@@ -24,6 +24,11 @@ fn vs_object(
     @location(3) inst_pos: vec3f,
     @location(4) scale: f32,
     @location(5) yaw: f32,
+    @location(6) tint: vec4f,
 ) -> @builtin(position) vec4f {
-    return light_view_proj * vec4f(object_position(pos, color.a, inst_pos, scale, yaw), 1.0);
+    // Triangles reduits a un point : pas d'ombre.
+    if leaves_fallen(color.a, inst_pos, yaw, tint.a) {
+        return vec4f(0.0, 0.0, 0.0, 1.0);
+    }
+    return light_view_proj * vec4f(object_position(pos, color.a, inst_pos, scale, yaw, tint.a), 1.0);
 }

@@ -11,11 +11,14 @@
 //! - Le profil en long suit le terrain lisse sur 400 m, monte a 7.5 m au-dessus de l'eau pour les ponts,
 //!   et enjambe les autres autoroutes. Le terrain se plie a la chaussee : remblais et deblais, sauf sous
 //!   les viaducs.
+//! - Tunnels : sous un relief qui domine de 80 m les deux rampes d'acces a 4 %, la chaussee passe en
+//!   ligne droite d'un pied a l'autre. Elle entre dans la montagne la ou la couverture depasse 12 m,
+//!   par une tete de beton entre deux murs en aile ; au-dessus, le relief reste naturel.
 //! - Une autoroute part d'une sortie de la ville : une avenue de son plan prolongee jusqu'au bord.
 
 use super::city::City;
 use super::fast_hash::FastMap;
-use super::generator::{planet_radius, smoothstep, Detail, Generator, Surface};
+use super::generator::{par_map, planet_radius, smoothstep, Detail, Generator, Surface};
 use glam::{DVec2, DVec3};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
@@ -40,6 +43,45 @@ const RAMP: f64 = 0.045;
 pub const VIADUCT: f64 = 9.0;
 /// Distance de la sortie au bord de la ville, ou commence la recherche du chemin.
 const LEAD: f64 = 1500.0;
+/// Pente maximale d'un tunnel et de ses rampes d'acces.
+const TUNNEL_GRADE: f64 = 0.04;
+/// Hauteur du relief au-dessus des deux rampes d'acces pour qu'un tunnel vaille mieux qu'un col ou
+/// qu'une tranchee.
+const TUNNEL_RELIEF: f64 = 80.0;
+/// Longueur maximale d'un tunnel, d'un pied du relief a l'autre.
+const TUNNEL_REACH: f64 = 10_000.0;
+/// Couverture au-dessus de la chaussee a l'entree d'un tunnel : en dessous, c'est une tranchee.
+pub const PORTAL_COVER: f64 = 12.0;
+/// Hauteur libre sous la cle de voute.
+pub const VAULT: f64 = 7.4;
+/// Les murs en aile qui tiennent la tranchee devant une tete de tunnel.
+pub const APPROACH: f64 = 45.0;
+/// Ecart des points de la recherche des tunnels.
+const COARSE: f64 = 200.0;
+
+/// La droite d'un tunnel, d'un pied du relief a l'autre : abscisses et altitudes.
+#[derive(Clone, Copy, Debug)]
+struct Bore {
+    a: f64,
+    za: f64,
+    b: f64,
+    zb: f64,
+}
+
+impl Bore {
+    /// Altitude la plus haute permise a la chaussee : la droite, prolongee par des rampes a 4 % sur
+    /// 800 m, qui se relevent ensuite de plus en plus vite pour rendre la chaussee au terrain.
+    fn level(&self, s: f64) -> f64 {
+        let ramp = |d: f64| d * TUNNEL_GRADE + (d - 800.0).max(0.0).powi(2) / 3000.0;
+        if s < self.a {
+            self.za + ramp(self.a - s)
+        } else if s > self.b {
+            self.zb + ramp(s - self.b)
+        } else {
+            self.za + (self.zb - self.za) * (s - self.a) / (self.b - self.a).max(1.0)
+        }
+    }
+}
 
 /// Le profil en long en un point.
 #[derive(Clone, Copy, Debug)]
@@ -50,6 +92,8 @@ pub struct Profile {
     pub ground: f64,
     /// De l'eau sous l'axe.
     pub wet: bool,
+    /// La chaussee passe dans un tunnel.
+    pub tunnel: bool,
 }
 
 impl Profile {
@@ -66,9 +110,12 @@ pub struct Highway {
     pub lanes: u8,
     points: Vec<DVec3>,
     length: f64,
-    sections: Vec<OnceLock<Vec<[f32; 3]>>>,
+    sections: Vec<OnceLock<Vec<[f32; 4]>>>,
     /// Passages au-dessus d'autres autoroutes : (abscisse ici, autoroute, abscisse sur elle).
     over: Vec<(f64, usize, f64)>,
+    /// Droites des tunnels, et leurs tetes : (entree, sortie), en abscisses, cherchees a la demande.
+    bores: Vec<Bore>,
+    tunnels: OnceLock<Vec<(f64, f64)>>,
 }
 
 impl Highway {
@@ -78,8 +125,39 @@ impl Highway {
         let length = points.windows(2).map(|w| (w[1] - w[0]).length() * r).sum::<f64>();
         let samples = (length / STEP).ceil() as usize + 1;
         let sections = (0..(samples - 1).div_ceil(SECTION).max(1)).map(|_| OnceLock::new()).collect();
-        Self { from, to, lanes, points, length, sections, over: Vec::new() }
+        Self { from, to, lanes, points, length, sections, over: Vec::new(), bores: Vec::new(), tunnels: OnceLock::new() }
     }
+
+    /// Les tunnels : (entree, sortie), en abscisses.
+    pub fn tunnels(&self, gen: &Generator) -> &[(f64, f64)] {
+        if self.bores.is_empty() {
+            return &[];
+        }
+        self.tunnels.get_or_init(|| tunnel_spans(gen, self))
+    }
+
+    /// Vrai si l'abscisse s est dans un tunnel.
+    pub fn in_tunnel(&self, gen: &Generator, s: f64) -> bool {
+        self.tunnels(gen).iter().any(|t| s >= t.0 && s <= t.1)
+    }
+
+    /// Distance a la tete de tunnel la plus proche, hors du tunnel (0 dedans), et le sens vers le tunnel.
+    pub fn portal(&self, gen: &Generator, s: f64) -> Option<(f64, f64)> {
+        self.tunnels(gen)
+            .iter()
+            .map(|t| {
+                if s < t.0 {
+                    (t.0 - s, 1.0)
+                } else if s > t.1 {
+                    (s - t.1, -1.0)
+                } else {
+                    (0.0, 0.0)
+                }
+            })
+            .min_by(|x, y| x.0.total_cmp(&y.0))
+    }
+
+
 
     /// Longueur de l'autoroute, en metres.
     pub fn length(&self) -> f64 {
@@ -145,6 +223,37 @@ pub struct Hit {
     pub dist: f64,
 }
 
+/// Un point sous la voute d'un tunnel.
+#[derive(Clone, Copy, Debug)]
+pub struct TunnelHit {
+    /// Altitude de la chaussee.
+    pub road: f64,
+    /// Ecart a l'axe, positif a gauche, en metres.
+    pub x: f64,
+    /// Direction de la gauche.
+    pub left: DVec3,
+    /// Demi-largeur de l'autoroute, et du terre-plein central.
+    pub half: f64,
+    pub median: f64,
+}
+
+impl TunnelHit {
+    /// Ce qui depasse des murs d'un tube (le terre-plein porte le mur qui separe les deux tubes),
+    /// pour un cercle de ce rayon : de combien le repousser, et vers ou (+1 a gauche).
+    pub fn wall(&self, radius: f64) -> Option<(f64, f64)> {
+        let (side, a) = (self.x.signum(), self.x.abs());
+        let outer = self.half - 0.6 - radius;
+        let inner = self.median - 0.5 + radius;
+        if a > outer {
+            Some((a - outer, -side))
+        } else if a < inner {
+            Some((inner - a, side))
+        } else {
+            None
+        }
+    }
+}
+
 /// Morceaux de trace par maille de la sphere : (autoroute, premier segment, dernier segment).
 type RouteIndex = FastMap<(u8, i32, i32), Vec<(u32, u32, u32)>>;
 
@@ -190,6 +299,149 @@ fn resample(line: &[DVec3], step: f64) -> Vec<DVec3> {
     out
 }
 
+/// Sol sous l'axe des points lo a hi du profil : (altitude, niveau de l'eau, mouille), et la ligne de
+/// la chaussee avant les ponts : le terrain lisse sur 400 m (l'eau compte a son niveau, pas a son
+/// fond), abaissee sous les reliefs que percent les tunnels.
+fn level_line(gen: &Generator, hw: &Highway, bores: &[Bore], lo: usize, hi: usize) -> (Vec<(f64, f64, bool)>, Vec<f64>) {
+    let detail = Detail::for_spacing(STEP);
+    let raw: Vec<(f64, f64, bool)> = (lo..=hi)
+        .map(|i| {
+            let s = (i as f64 * STEP).min(hw.length);
+            let sf = gen.surface_natural(hw.dir_at(s), &detail);
+            (sf.height as f64, sf.water_level as f64, sf.height < sf.water_level + 0.5)
+        })
+        .collect();
+    let base: Vec<f64> = raw.iter().map(|r| if r.2 { r.1 } else { r.0 }).collect();
+    let mut smooth = box_filter(&box_filter(&base, 10), 10);
+    if !bores.is_empty() {
+        for (k, z) in smooth.iter_mut().enumerate() {
+            if let Some(cap) = bore_level(bores, (lo + k) as f64 * STEP) {
+                *z = z.min(cap);
+            }
+        }
+    }
+    (raw, smooth)
+}
+
+/// Les tunnels d'une autoroute. Sur un profil grossier du terrain, un point est sous un relief a
+/// percer si, des deux cotes, une rampe a 4 % partie d'un pied du relief passe a plus de 80 m sous
+/// lui. Le tunnel va d'un pied a l'autre, en ligne droite ; la chaussee approche par des rampes a 4 %
+/// au plus. Ses tetes sont la ou la couverture depasse 12 m sur le profil fin : avant, une tranchee.
+fn plan_tunnels(gen: &Generator, hw: &Highway) -> Vec<Bore> {
+    let n = (hw.length / COARSE).floor() as usize + 1;
+    if n < 8 {
+        return Vec::new();
+    }
+    let detail = Detail::for_spacing(COARSE);
+    let g: Vec<f64> = (0..n)
+        .map(|k| {
+            let sf = gen.surface_natural(hw.dir_at((k as f64 * COARSE).min(hw.length)), &detail);
+            sf.height.max(sf.water_level) as f64
+        })
+        .collect();
+    let w = (TUNNEL_REACH * 0.5 / COARSE) as isize;
+    let rise = TUNNEL_GRADE * COARSE;
+    // Le pied le plus favorable d'un cote : le minimum de la rampe, et ou il est atteint.
+    let foot = |k: usize, side: isize| -> (f64, usize) {
+        let mut best = (g[k], k);
+        for d in 1..=w {
+            let j = k as isize + side * d;
+            if j < 0 || j >= n as isize {
+                break;
+            }
+            let v = g[j as usize] + rise * d as f64;
+            if v < best.0 {
+                best = (v, j as usize);
+            }
+        }
+        best
+    };
+    let depth = |k: usize| g[k] - foot(k, -1).0.max(foot(k, 1).0);
+    // Pas de tunnel aux portes des villes.
+    let margin = (2000.0 / COARSE) as usize;
+    let mut bores: Vec<Bore> = Vec::new();
+    let mut k = margin;
+    while k + margin < n {
+        if depth(k) <= TUNNEL_RELIEF {
+            k += 1;
+            continue;
+        }
+        // Le relief entier : on perce sous son point le plus enfoui.
+        let mut end = k;
+        let mut core = (depth(k), k);
+        while end + 1 + margin < n && depth(end + 1) > TUNNEL_RELIEF {
+            end += 1;
+            let d = depth(end);
+            if d > core.0 {
+                core = (d, end);
+            }
+        }
+        let c = core.1;
+        let (a, b) = (foot(c, -1).1, foot(c, 1).1);
+        let (za, zb) = (g[a], g[b]);
+        let len = (b - a) as f64 * COARSE;
+        let inside = bores.iter().any(|o| c as f64 * COARSE >= o.a && c as f64 * COARSE <= o.b);
+        if len > 0.0 && (zb - za).abs() / len <= TUNNEL_GRADE + 1e-6 && !inside {
+            bores.push(Bore { a: a as f64 * COARSE, za, b: b as f64 * COARSE, zb });
+        }
+        k = end + 1;
+    }
+    bores
+}
+
+/// Les tetes des tunnels, sur le profil fin : la ou la couverture depasse PORTAL_COVER.
+fn tunnel_spans(gen: &Generator, hw: &Highway) -> Vec<(f64, f64)> {
+    let bores = &hw.bores;
+    let samples = hw.samples();
+    let mut spans: Vec<(f64, f64)> = Vec::new();
+    for b in bores {
+        let lo = ((b.a - 800.0) / STEP).floor().max(0.0) as usize;
+        let hi = (((b.b + 800.0) / STEP).ceil() as usize).min(samples - 1);
+        let (raw, road) = level_line(gen, hw, bores, lo, hi);
+        let mut run: Option<(f64, f64)> = None;
+        for k in 0..raw.len() {
+            let s = (lo + k) as f64 * STEP;
+            if s < b.a - 400.0 || s > b.b + 400.0 {
+                continue;
+            }
+            let covered = !raw[k].2 && raw[k].0 - road[k] > PORTAL_COVER;
+            if covered {
+                run = Some(match run {
+                    // Une breche de moins de 120 m reste dans le tunnel.
+                    Some((s0, s1)) if s - s1 <= 120.0 => (s0, s),
+                    Some(done) => {
+                        spans.push(done);
+                        (s, s)
+                    }
+                    None => (s, s),
+                });
+            }
+        }
+        spans.extend(run);
+    }
+    spans.retain(|t| t.1 - t.0 >= 60.0);
+    spans.sort_by(|x, y| x.0.total_cmp(&y.0));
+    spans.dedup_by(|b, a| {
+        let overlap = b.0 <= a.1 + 120.0;
+        if overlap {
+            a.1 = a.1.max(b.1);
+        }
+        overlap
+    });
+    spans
+}
+
+/// Descente d'une rampe d'acces a un pont, a cette distance du pont : 4.5 %, puis de plus en plus raide
+/// au-dela de 700 m, pour rejoindre le terrain avant le bout de la fenetre de calcul (MARGIN pas).
+fn ramp_drop(d: f64) -> f64 {
+    d * RAMP + (d - 700.0).max(0.0).powi(2) / 800.0
+}
+
+/// Altitude la plus haute permise par les tunnels proches.
+fn bore_level(bores: &[Bore], s: f64) -> Option<f64> {
+    bores.iter().filter(|b| s > b.a - 4000.0 && s < b.b + 4000.0).map(|b| b.level(s)).min_by(|x, y| x.total_cmp(y))
+}
+
 /// Moyenne glissante, fenetre tronquee aux bouts.
 fn box_filter(v: &[f64], r: usize) -> Vec<f64> {
     let n = v.len();
@@ -222,27 +474,17 @@ impl Highways {
         let data = hw.sections[sec].get_or_init(|| self.compute(gen, h, sec));
         let (a, b) = (data[i - sec * SECTION], data[(i + 1 - sec * SECTION).min(data.len() - 1)]);
         let lerp = |k: usize| a[k] as f64 + (b[k] as f64 - a[k] as f64) * t;
-        Profile { road: lerp(0), ground: lerp(1), wet: a[2].max(b[2]) > 0.5 }
+        Profile { road: lerp(0), ground: lerp(1), wet: a[2].max(b[2]) > 0.5, tunnel: a[3].min(b[3]) > 0.5 }
     }
 
-    fn compute(&self, gen: &Generator, h: usize, sec: usize) -> Vec<[f32; 3]> {
+    fn compute(&self, gen: &Generator, h: usize, sec: usize) -> Vec<[f32; 4]> {
         let hw = &self.list[h];
         let n = hw.samples();
         let first = sec * SECTION;
         let last = ((sec + 1) * SECTION).min(n - 1);
         let lo = first.saturating_sub(MARGIN);
         let hi = (last + MARGIN).min(n - 1);
-        let detail = Detail::for_spacing(STEP);
-        let raw: Vec<(f64, f64, bool)> = (lo..=hi)
-            .map(|i| {
-                let s = (i as f64 * STEP).min(hw.length);
-                let sf = gen.surface_natural(hw.dir_at(s), &detail);
-                (sf.height as f64, sf.water_level as f64, sf.height < sf.water_level + 0.5)
-            })
-            .collect();
-        // Le terrain lisse sur 400 m ; l'eau compte a son niveau, pas a son fond.
-        let base: Vec<f64> = raw.iter().map(|r| if r.2 { r.1 } else { r.0 }).collect();
-        let smooth = box_filter(&box_filter(&base, 10), 10);
+        let (raw, smooth) = level_line(gen, hw, &hw.bores, lo, hi);
         let mut target = vec![f64::MIN; raw.len()];
         for (k, r) in raw.iter().enumerate() {
             if r.2 {
@@ -250,11 +492,21 @@ impl Highways {
             }
         }
         for &(s, other, so) in &hw.over {
+            // En tunnel, l'autoroute passe deja sous l'autre.
+            if hw.in_tunnel(gen, s) {
+                continue;
+            }
             let k = (s / STEP).round() as isize - lo as isize;
             if k + 4 < 0 || k - 4 >= raw.len() as isize {
                 continue;
             }
-            let level = self.profile(gen, other, so).road + OVERPASS;
+            let o = self.profile(gen, other, so);
+            // L'autre passe deja assez haut, sur un viaduc : celle-ci passe dessous.
+            let here = smooth[k.clamp(0, raw.len() as isize - 1) as usize];
+            if o.bridge() && o.road - here > 7.0 {
+                continue;
+            }
+            let level = o.road + OVERPASS;
             for d in -4..=4 {
                 let j = k + d;
                 if (0..raw.len() as isize).contains(&j) {
@@ -271,11 +523,12 @@ impl Highways {
                     let (a, b) = (k.saturating_sub(MARGIN), (k + MARGIN).min(raw.len() - 1));
                     for (j, t) in target.iter().enumerate().take(b + 1).skip(a) {
                         if *t > f64::MIN {
-                            road = road.max(t - (k as f64 - j as f64).abs() * STEP * RAMP);
+                            road = road.max(t - ramp_drop((k as f64 - j as f64).abs() * STEP));
                         }
                     }
                 }
-                [road as f32, raw[k].0 as f32, raw[k].2 as u8 as f32]
+                let s = i as f64 * STEP;
+                [road as f32, raw[k].0 as f32, raw[k].2 as u8 as f32, hw.in_tunnel(gen, s) as u8 as f32]
             })
             .collect()
     }
@@ -312,15 +565,33 @@ impl Highways {
             return;
         }
         let (mut weight, mut level) = (0.0f32, 0.0f32);
+        let mut roof = f32::MIN;
         self.near(dir, INFLUENCE, |hit| {
             let hw = &self.list[hit.hw];
             let p = self.profile(gen, hit.hw, hit.s);
-            let dh = (p.road - s.height as f64).abs().min(60.0);
             let inner = hw.half_width() + 1.0;
+            if p.tunnel {
+                // Au-dessus d'un tunnel, le relief reste naturel, mais couvre toujours la voute.
+                if hit.dist < inner + 4.0 {
+                    roof = roof.max((p.road + VAULT + 3.0) as f32);
+                }
+                return;
+            }
+            let dh = (p.road - s.height as f64).abs().min(60.0);
             let mut w = 1.0 - smoothstep(inner as f32, (inner + 10.0 + dh * 1.5) as f32, hit.dist as f32);
             // Sous un viaduc, le sol reste naturel ; une tranchee trop profonde s'efface.
             w *= 1.0 - smoothstep(VIADUCT as f32 - 1.0, VIADUCT as f32 + 2.0, (p.road - p.ground) as f32);
-            w *= 1.0 - smoothstep(30.0, 45.0, (p.ground - p.road) as f32);
+            match hw.portal(gen, hit.s) {
+                // Devant une tete de tunnel, des murs tiennent la tranchee : ses flancs se resserrent
+                // jusqu'a la largeur de la tete, et le relief l'entoure.
+                Some((d, _)) if d < APPROACH => {
+                    let k = (d / APPROACH) as f32;
+                    let edge = inner as f32 + 0.5 + k * (10.0 + dh as f32 * 1.5);
+                    w = w.min(1.0 - smoothstep(edge - 0.5, edge + 0.5, hit.dist as f32));
+                }
+                Some((d, _)) if d < 600.0 => {}
+                _ => w *= 1.0 - smoothstep(30.0, 45.0, (p.ground - p.road) as f32),
+            }
             if w > weight {
                 (weight, level) = (w, p.road as f32 - 0.3);
             }
@@ -328,13 +599,46 @@ impl Highways {
         if weight > 0.0 {
             s.height += (level - s.height) * weight;
             s.ridge *= 1.0 - weight;
+        } else if s.height < roof {
+            s.height = roof;
         }
+    }
+
+    /// Le tunnel au-dessus d'un point, s'il est sous sa voute : chaussee, ecart a l'axe (positif a
+    /// gauche), direction de la gauche.
+    pub fn tunnel(&self, gen: &Generator, dir: DVec3) -> Option<TunnelHit> {
+        let mut best: Option<TunnelHit> = None;
+        self.near(dir, INFLUENCE, |hit| {
+            let hw = &self.list[hit.hw];
+            if hit.dist > hw.half_width() + 2.0 || !hw.in_tunnel(gen, hit.s) || best.is_some_and(|b| b.x.abs() < hit.dist) {
+                return;
+            }
+            let axis = hw.dir_at(hit.s);
+            let left = axis.cross(hw.tangent_at(hit.s)).normalize();
+            let x = (dir - axis).dot(left) * planet_radius();
+            let road = self.profile(gen, hit.hw, hit.s).road;
+            best = Some(TunnelHit { road, x, left, half: hw.half_width(), median: hw.median() });
+        });
+        best
     }
 
     /// Distance au bord de la chaussee la plus proche (negative dessus), si une autoroute est a portee.
     pub fn clearance(&self, dir: DVec3) -> Option<f64> {
         let mut best: Option<f64> = None;
         self.near(dir, INFLUENCE, |hit| {
+            let d = hit.dist - self.list[hit.hw].half_width();
+            best = Some(best.map_or(d, |b: f64| b.min(d)));
+        });
+        best
+    }
+
+    /// Comme `clearance`, mais le relief au-dessus des tunnels reste libre : pour les arbres et l'herbe.
+    pub fn open_clearance(&self, gen: &Generator, dir: DVec3) -> Option<f64> {
+        let mut best: Option<f64> = None;
+        self.near(dir, INFLUENCE, |hit| {
+            if self.list[hit.hw].in_tunnel(gen, hit.s) {
+                return;
+            }
             let d = hit.dist - self.list[hit.hw].half_width();
             best = Some(best.map_or(d, |b: f64| b.min(d)));
         });
@@ -353,11 +657,11 @@ impl Highways {
     }
 
     /// Couleur de la chaussee vue de loin, et sa part dans une maille de cet ecart.
-    pub fn paint(&self, dir: DVec3, spacing: f64) -> Option<([f32; 3], f32)> {
+    pub fn paint(&self, gen: &Generator, dir: DVec3, spacing: f64) -> Option<([f32; 3], f32)> {
         let mut best: Option<f32> = None;
         self.near(dir, INFLUENCE, |hit| {
             let half = self.list[hit.hw].half_width();
-            if hit.dist < half + spacing * 0.5 {
+            if hit.dist < half + spacing * 0.5 && !self.list[hit.hw].in_tunnel(gen, hit.s) {
                 // De loin, un trait plus fin qu'une maille : sa couleur ne compte que pour sa part.
                 // L'emprise deboisee et les accotements clairs se voient de plus loin que la chaussee seule.
                 let k = if spacing < half { 1.0 } else { (half * 5.0 / spacing).min(0.85) as f32 };
@@ -686,6 +990,15 @@ impl Highways {
             let lanes = if cities[a].size >= 0.7 && cities[b].size >= 0.7 { 3 } else { 2 };
             out.list.push(Highway::new(a, b, lanes, &line));
         }
+        step("autoroutes");
+        let planned = {
+            let list = &out.list;
+            par_map(list.len(), |i| plan_tunnels(gen, &list[i]))
+        };
+        for (hw, bores) in out.list.iter_mut().zip(planned) {
+            hw.bores = bores;
+        }
+        step("tunnels");
         out.build_index();
         step("index");
         out.find_crossings();
@@ -880,7 +1193,7 @@ fn search(
             let kind = if s.height < s.water_level + 1.0 {
                 if s.fresh {
                     1
-                } else if s.water_level - s.height < 70.0 {
+                } else if s.water_level - s.height < 100.0 {
                     // Mer peu profonde : un long pont reste possible, a grands frais.
                     5
                 } else {
@@ -1012,6 +1325,35 @@ mod tests {
         assert_eq!(*p.last().unwrap(), b);
         assert_eq!(p.len(), 14);
         assert!(((p[1] - p[0]).length() * r - POINT_STEP).abs() < 0.01);
+    }
+
+    #[test]
+    fn ridges_are_crossed_in_tunnels() {
+        let gen = Generator::new(PlanetParams { seed: 3, ..Default::default() });
+        let hw = &gen.cities.highways;
+        let mut found = 0;
+        for (i, h) in hw.list.iter().enumerate() {
+            for &(t0, t1) in h.tunnels(&gen) {
+                if t1 - t0 < 400.0 || found >= 6 {
+                    continue;
+                }
+                let mid = (t0 + t1) * 0.5;
+                let (p, q) = (hw.profile(&gen, i, mid), hw.profile(&gen, i, mid + 100.0));
+                assert!(p.tunnel && q.tunnel);
+                // Pente douce sous la montagne, et le relief couvre la voute.
+                assert!(((q.road - p.road) / 100.0).abs() <= TUNNEL_GRADE + 0.01, "{} -> {}", p.road, q.road);
+                let dir = h.dir_at(mid);
+                assert!(gen.height(dir) as f64 > p.road + VAULT, "sol {}, chaussee {}", gen.height(dir), p.road);
+                // Sous la voute, la chaussee porte ; les murs retiennent.
+                let t = hw.tunnel(&gen, dir).expect("sous la voute");
+                assert!((t.road - p.road).abs() < 0.5 && t.x.abs() < 1.0);
+                assert!(t.wall(1.0).is_some());
+                let lane = (dir - t.left * ((h.median() + 5.0) / planet_radius())).normalize();
+                assert!(hw.tunnel(&gen, lane).is_some_and(|t| t.wall(1.0).is_none()));
+                found += 1;
+            }
+        }
+        assert!(found >= 3, "{found} tunnels");
     }
 
     #[test]

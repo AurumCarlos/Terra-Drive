@@ -119,7 +119,7 @@ fn main() {
             ("sol", time(&|p| gen.ground_color(p, 10.0, 0.9, gen.climate(p, 100.0), 0.0, 0.0)[0])),
             ("canopee", time(&|p| gen.with_canopy([0.1; 3], p, 10.0, 0.9, gen.climate(p, 100.0), 0.0, id.spacing()).1)),
             ("villes", time(&|p| gen.cities.paint(p, id.spacing(), &gen).map_or(0.0, |c| c.1))),
-            ("autoroutes", time(&|p| gen.cities.highways.paint(p, id.spacing()).map_or(0.0, |c| c.1))),
+            ("autoroutes", time(&|p| gen.cities.highways.paint(&gen, p, id.spacing()).map_or(0.0, |c| c.1))),
             ("circuits", time(&|p| gen.cities.circuits.paint(p, id.spacing()).map_or(0.0, |c| c.1))),
             ("roche", time(&|p| gen.rock_color(p).1)),
         ];

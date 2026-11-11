@@ -128,10 +128,18 @@ pub struct Car {
     dents: Vec<[f32; 4]>,
     /// Temps passe immobile, garee : au-dela d'une seconde, la physique s'endort.
     rest: f64,
+    /// Adherence laissee par le temps qu'il fait : 1 au sec, moins sur route mouillee ou enneigee.
+    pub weather_grip: f64,
 }
 
 /// Le sol sous un point pour une roue a l'altitude `alt` : relief, tabliers d'autoroutes et de ponts, eau.
 fn floor(world: &Generator, dir: DVec3, alt: f64) -> (f64, f64) {
+    // Sous la voute d'un tunnel, la chaussee porte ; le relief est au-dessus.
+    if let Some(t) = world.cities.highways.tunnel(world, dir) {
+        if alt < t.road + crate::world::highway::VAULT {
+            return (t.road + 0.13, t.road - 50.0);
+        }
+    }
     let s = world.surface(dir);
     let mut h = s.height as f64;
     if let Some(d) = world.cities.highways.deck(world, dir) {
@@ -172,6 +180,7 @@ fn plane_under(world: &Generator, p: DVec3, heading: DVec3) -> (Plane, f64) {
     // Asphalte : rues, autoroutes, circuits, routes de montagne ; sinon terre et herbe.
     let paved = world.cities.ground(dir, world) == crate::world::city::Ground::Road
         || world.cities.highways.clearance(dir).is_some_and(|c| c < 0.5)
+        || world.cities.highways.tunnel(world, dir).is_some()
         || world.cities.circuits.on_track(dir)
         || world.cities.mountains.on_road(dir);
     let grip = if depth > 0.15 {
@@ -243,6 +252,7 @@ impl Car {
             palette: 0,
             dents: Vec::new(),
             rest: 0.0,
+            weather_grip: 1.0,
         }
     }
 
@@ -391,8 +401,11 @@ impl Car {
     /// La physique d'une image : le sol sous les roues, la dynamique, les chocs.
     fn simulate(&mut self, c: &Controls, world: &Generator, streamer: &Streamer, dt: f64) {
         let heading = self.chassis.forward();
-        let wheels: [Plane; 4] =
-            std::array::from_fn(|k| plane_under(world, self.chassis.to_world(model::WHEELS[k].as_dvec3()), heading).0);
+        let wheels: [Plane; 4] = std::array::from_fn(|k| {
+            let mut plane = plane_under(world, self.chassis.to_world(model::WHEELS[k].as_dvec3()), heading).0;
+            plane.grip *= self.weather_grip;
+            plane
+        });
         let (body, depth) = plane_under(world, self.chassis.to_world(DVec3::new(0.0, 0.5, 0.0)), heading);
         let contact = Contact { up: self.chassis.pos.normalize(), wheels, body };
         self.chassis.update(c, &contact, dt);
@@ -416,6 +429,14 @@ impl Car {
             let ground = world.height(probe.normalize()) as f64;
             world.cities.push_out(&mut probe, 0.95, ground);
             streamer.push_out_of_objects(&mut probe, 0.95);
+            // Les murs d'un tunnel.
+            if let Some(t) = world.cities.highways.tunnel(world, probe.normalize()) {
+                if probe.length() - planet_radius() < t.road + crate::world::highway::VAULT {
+                    if let Some((depth, side)) = t.wall(0.95) {
+                        probe += t.left * (side * depth);
+                    }
+                }
+            }
             let d = probe - probe0;
             if d.length() > push.length() {
                 push = d;
@@ -451,7 +472,7 @@ impl Car {
         for k in 0..4 {
             if ch.touching[k] {
                 slip = slip.max(((ch.slide[k] - 0.1) / 0.25).clamp(0.0, 1.0) * (ch.load[k] / 3000.0).min(1.0));
-                rough += (ch.grip[k] < 0.9) as i32 as f64;
+                rough += (ch.grip[k] < 0.9 * self.weather_grip) as i32 as f64;
                 grounded += 1.0;
             }
         }
@@ -529,11 +550,23 @@ impl Car {
                 let distance = 6.4 + (self.speed.abs() * 0.02).min(1.2);
                 let height = 1.9 + self.look.1 * 3.0;
                 let mut eye = self.position - back * distance + up * height.max(0.6);
-                // Jamais sous le sol.
-                let ground = world.height(eye.normalize()) as f64;
-                let min = planet_radius() + ground + 0.5;
-                if eye.length() < min {
-                    eye = eye.normalize() * min;
+                // Jamais sous le sol, ni hors de la voute d'un tunnel.
+                let inside = world.cities.highways.tunnel(world, self.position.normalize());
+                if let Some(t) = inside {
+                    let top = planet_radius() + t.road + crate::world::highway::VAULT - 0.8;
+                    if eye.length() > top {
+                        eye = eye.normalize() * top;
+                    }
+                    let low = planet_radius() + t.road + 0.6;
+                    if eye.length() < low {
+                        eye = eye.normalize() * low;
+                    }
+                } else {
+                    let ground = world.height(eye.normalize()) as f64;
+                    let min = planet_radius() + ground + 0.5;
+                    if eye.length() < min {
+                        eye = eye.normalize() * min;
+                    }
                 }
                 let target = self.position + up * 1.1 + back * 1.5;
                 (eye, (target - eye).normalize())

@@ -293,7 +293,7 @@ pub fn build_chunk(gen: &Generator, id: NodeId) -> ChunkMesh {
             let surface = &surfaces[k];
             let mut climate = gen.climate(dir, y);
             // L'eau reverdit le fond des vallees, jusque dans les pays secs.
-            climate.moisture = (climate.moisture + surface.valley * 0.3).min(1.0);
+            climate = climate.wetter(surface.valley * 0.6);
             // Une berge de riviere ou de lac a bien moins de sable qu'une plage de mer.
             let above = if surface.fresh {
                 // De loin, une berge est plus etroite que la maille : elle ne doit pas la colorer entiere.
@@ -318,7 +318,7 @@ pub fn build_chunk(gen: &Generator, id: NodeId) -> ChunkMesh {
                 None => (col, canopy),
             };
             // Les autoroutes : un trait gris vu de loin, un sol nu sous la chaussee de pres.
-            let (col, canopy) = match gen.cities.highways.paint(dir, id.spacing()) {
+            let (col, canopy) = match gen.cities.highways.paint(gen, dir, id.spacing()) {
                 Some((paint, k)) => (std::array::from_fn(|c| col[c] + (paint[c] - col[c]) * k), canopy * (1.0 - k)),
                 None => (col, canopy),
             };

@@ -18,6 +18,8 @@ pub enum MenuAction {
     GoTo(f64, f64),
     /// Arriver au-dessus de la ville la plus proche.
     GoToCity,
+    /// Regle la saison : moment de l'annee de 0 (mi-janvier) a 1.
+    SetSeason(f32),
     Quit,
 }
 
@@ -54,12 +56,16 @@ pub struct HudData {
     pub circuit: Option<(&'static str, &'static str, f64)>,
     /// Route de montagne proche : nom, epingles, distance (m).
     pub mountain: Option<(String, usize, f64)>,
+    /// Mois, temperature et ciel du lieu.
+    pub weather: String,
 }
 
 pub struct MenuState {
     pub open: bool,
     pub params: PlanetParams,
     pub render_distance_km: f64,
+    /// Mois affiche par le reglage de la saison, de 1 a 12.
+    pub month: f32,
     seed_text: String,
     /// Graine de tirage des planetes aleatoires.
     rng: Rng,
@@ -83,6 +89,7 @@ impl MenuState {
             params,
             render_distance_km: DEFAULT_RENDER_DISTANCE / 1000.0,
             seed_text: params.seed.to_string(),
+            month: 7.0,
             rng: Rng(clock),
             new_planet_rect: None,
             map_images: None,
@@ -152,6 +159,7 @@ fn hud(ctx: &egui::Context, d: &HudData) {
                     line(ui, format!("Position  {:.2} {ns}  {:.2} {ew}", d.latitude.abs(), d.longitude.abs()));
                     let minutes = (d.local_time * 1440.0) as u32;
                     line(ui, format!("Heure     {:02}h{:02}", minutes / 60, minutes % 60));
+                    line(ui, format!("Temps     {}", d.weather));
                     line(ui, format!("Planete   {}", d.seed));
                     if let Some((name, plan, dist, bearing)) = &d.city {
                         if *dist < 1500.0 {
@@ -371,6 +379,13 @@ fn menu(ctx: &egui::Context, state: &mut MenuState, actions: &mut Vec<MenuAction
                     .fixed_decimals(0);
                 if ui.add(slider).changed() {
                     actions.push(MenuAction::SetRenderDistance(state.render_distance_km * 1000.0));
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Mois");
+                let slider = egui::Slider::new(&mut state.month, 1.0..=12.0).fixed_decimals(0).step_by(1.0);
+                if ui.add(slider).changed() {
+                    actions.push(MenuAction::SetSeason((state.month - 1.0) / 12.0));
                 }
             });
 

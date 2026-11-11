@@ -16,6 +16,7 @@ pub mod sky;
 pub mod sync;
 pub mod ui;
 pub mod vehicle;
+pub mod weather;
 /// Generation de la planete : relief, climat, eau, villes, routes, et streaming autour de la camera.
 pub mod world;
 

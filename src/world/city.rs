@@ -11,7 +11,7 @@
 //! le plan d'une ville ne depend que de la graine, et n'est calcule qu'a l'approche.
 
 use super::fast_hash::FastMap;
-use super::generator::{planet_radius, smoothstep, Detail, Generator, SEA_LEVEL};
+use super::generator::{planet_radius, smoothstep, Detail, Generator, Koppen, SEA_LEVEL};
 use super::highway::Highways;
 use super::noise::{hash_seed, Rng};
 use glam::{DVec2, DVec3};
@@ -2277,13 +2277,23 @@ impl Cities {
                             let th = golden * i as f64;
                             let dir = DVec3::new(th.cos() * r, y, th.sin() * r);
                             let base = gen.water.elevation.sample(dir);
-                            if !(6.0..1100.0).contains(&base) || gen.orogeny.sample_linear(dir) > 0.3 {
+                            if !(6.0..2600.0).contains(&base) || gen.orogeny.sample_linear(dir) > 0.6 {
                                 continue;
                             }
+                            // Les hommes vivent la ou le climat nourrit : pays temperes, mediterraneens et de
+                            // mousson d'abord ; presque personne dans les deserts (sauf le long d'un fleuve),
+                            // le froid subarctique, et personne dans la toundra ni sur la glace.
                             let c = gen.climate(dir, base);
-                            if !(0.24..0.95).contains(&c.temperature) || c.moisture < 0.12 {
-                                continue;
-                            }
+                            let livable: f64 = match c.koppen() {
+                                Koppen::Ice | Koppen::Tundra => continue,
+                                Koppen::Mediterranean | Koppen::Temperate => 1.0,
+                                Koppen::Continental => 0.8,
+                                Koppen::Savanna => 0.75,
+                                Koppen::Rainforest => 0.5,
+                                Koppen::Steppe => 0.45,
+                                Koppen::Subarctic => 0.12,
+                                Koppen::Desert => 0.0,
+                            };
                             let w = gen.provinces.at(dir);
                             let rough =
                                 w.karst + w.dunes + w.glacial + w.badlands * 0.7 + w.mesa * 0.6 + w.inselberg * 0.3;
@@ -2296,6 +2306,7 @@ impl Cities {
                             }
                             let (mut lo, mut hi, mut coast, mut river) =
                                 (center.height, center.height, 0.0f64, center.valley as f64);
+                            let (mut seaside, mut foot) = (0.0f64, 0.0f64);
                             // Deux couronnes de sondes : une ville veut un site plat sur toute son etendue.
                             for k in 0..12 {
                                 let s = gen
@@ -2306,13 +2317,25 @@ impl Cities {
                                 if k % 2 == 0 && gen.water.elevation.sample(probe(dir, k, 14_000.0)) < 0.0 {
                                     coast = 1.0;
                                 }
+                                if k % 3 == 0 && gen.water.elevation.sample(probe(dir, k, 110_000.0)) < 0.0 {
+                                    seaside = 1.0;
+                                }
+                                // Un relief en vue, a une quinzaine de kilometres : le pied des montagnes.
+                                let far = gen.water.elevation.sample(probe(dir, k, if k % 2 == 0 { 11_000.0 } else { 19_000.0 }));
+                                foot = foot.max(((far - base) as f64 / 450.0).clamp(0.0, 1.0));
+                            }
+                            // Un desert ne se peuple qu'au bord de l'eau douce : la vallee du Nil.
+                            if livable <= 0.0 && river < 0.5 {
+                                continue;
                             }
                             let range = (hi - lo) as f64;
                             if range > 110.0 {
                                 continue;
                             }
-                            let mild = 1.0 - ((c.temperature as f64 - 0.62).abs() * 2.0).min(1.0);
-                            let score = 1.0 + coast * 1.1 + river.min(1.0) * 1.4 + mild * 0.6
+                            // Small et Cohen 2004 : la population se serre pres des cotes, le long des cours d'eau
+                            // et a basse altitude, bien plus qu'elle ne suit le climat.
+                            let low = 1.0 - (base as f64 / 1800.0).min(1.0);
+                            let score = 1.0 + coast * 1.1 + seaside * 0.4 + river.min(1.0) * 1.4 + livable * 1.5 + low * 0.7 + foot * 2.2
                                 - rough as f64 * 1.5
                                 - range / 70.0
                                 + hash01(seed ^ 0xC17, i as i64, 0) * 0.8;

@@ -259,7 +259,13 @@ impl Game for Explorer {
                 dir = street;
             }
         }
-        let ground = ctx.world.height(dir).max(0.0) as f64;
+        let mut ground = ctx.world.height(dir).max(0.0) as f64;
+        // Dans un tunnel : sur la chaussee, pas sur la montagne.
+        if altitude <= 10.0 {
+            if let Some(t) = ctx.world.cities.highways.tunnel(ctx.world, dir) {
+                ground = t.road + 0.1;
+            }
+        }
         let yaw = self.options.yaw.unwrap_or(vista_yaw);
         let pitch = self.options.pitch.unwrap_or(0.03);
         *ctx.camera = Camera::new(dir * (planet_radius() + ground + altitude), yaw, pitch);
@@ -317,6 +323,7 @@ impl Game for Explorer {
         }
         let world = ctx.world.clone();
         if let Some(car) = &mut self.car {
+            car.weather_grip = ctx.sky.weather.grip() as f64;
             car.update(ctx.input, &world, ctx.streamer, dt, self.driving);
             if self.driving {
                 ctx.sound.car = Some(car.sound(car.view == View::Cockpit));

@@ -41,7 +41,7 @@ type Scratch = [[Vec<ObjectInstance>; 3 * BANDS]; KIND_COUNT];
 /// emboitees, la cascade i dessine les bandes 0 a i) ; la derniere bande ne porte d'ombre dans aucune.
 const BANDS: usize = CASCADES + 1;
 /// Rayon englobant d'un arbre, pour savoir si son ombre peut tomber dans une cascade.
-const SHADOW_OBJECT_RADIUS: f32 = 25.0;
+const SHADOW_OBJECT_RADIUS: f32 = 45.0;
 
 /// Ajoute les objets d'une cellule, relatifs a la camera, dans la liste de leur niveau de detail.
 #[allow(clippy::too_many_arguments)]
@@ -124,6 +124,8 @@ struct Globals {
     camera_wrap: Vec4,
     misc: Vec4,
     camera_km: Vec4,
+    /// Moment de l'annee, precipitations, part de neige, sol mouille.
+    weather: Vec4,
 }
 
 #[repr(C)]
@@ -206,6 +208,9 @@ pub struct UiFrame {
     pub pixels_per_point: f32,
 }
 
+/// Cote d'une face de la carte de nebulosite.
+const WEATHER_SIZE: u32 = 128;
+
 pub struct Renderer {
     /// Temps cumules (TERRA_PROFILE) : image d'affichage, preparation, enregistrement, envoi et presentation.
     pub timings: [f64; 4],
@@ -235,6 +240,7 @@ pub struct Renderer {
 
     globals_buffer: wgpu::Buffer,
     globals_group: wgpu::BindGroup,
+    weather_texture: wgpu::Texture,
     shadow_read_group: wgpu::BindGroup,
     empty_group: wgpu::BindGroup,
     cascade_buffers: Vec<wgpu::Buffer>,
@@ -293,7 +299,7 @@ fn aabb_in_frustum(planes: &[Vec4; 5], min: Vec3, max: Vec3) -> bool {
 }
 
 /// Rayon englobant une cellule de vegetation et ses plus grands arbres.
-const CELL_CULL_RADIUS: f32 = 170.0;
+const CELL_CULL_RADIUS: f32 = 200.0;
 
 fn sphere_in_frustum(planes: &[Vec4; 5], center: Vec3, radius: f32) -> bool {
     planes.iter().all(|p| p.truncate().dot(center) + p.w >= -radius * p.truncate().length())
@@ -444,8 +450,18 @@ impl Renderer {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::Cube,
+                        multisampled: false,
+                    },
                     count: None,
                 },
             ],
@@ -495,6 +511,22 @@ impl Renderer {
             mipmap_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
+        // Climat de la planete, sur les six faces d'un cube : nebulosite (r), temperature moyenne (g), ecart
+        // entre l'hiver et l'ete (b) et pluie de l'annee (a), au niveau de la mer.
+        let weather_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("weather"),
+            size: wgpu::Extent3d { width: WEATHER_SIZE, height: WEATHER_SIZE, depth_or_array_layers: 6 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let weather_view = weather_texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::Cube),
+            ..Default::default()
+        });
         let globals_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("globals"),
             layout: &globals_layout,
@@ -502,6 +534,7 @@ impl Renderer {
                 wgpu::BindGroupEntry { binding: 0, resource: globals_buffer.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&noise_view) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&noise_sampler) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&weather_view) },
             ],
         });
 
@@ -691,7 +724,7 @@ impl Renderer {
         let march_layout = layout(&[&globals_layout, &empty_layout, &sized_layouts.depth]);
         let texture_layout = layout(&[&globals_layout, &sized_layouts.texture]);
         let rays_layout = layout(&[&globals_layout, &sized_layouts.texture, &sized_layouts.depth]);
-        let post_pipeline_layout = layout(&[&globals_layout, &sized_layouts.post]);
+        let post_pipeline_layout = layout(&[&globals_layout, &sized_layouts.post, &sized_layouts.depth]);
 
         let terrain_attrs = wgpu::vertex_attr_array![
             0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Unorm8x4, 7 => Unorm8x4, 8 => Float32
@@ -1016,6 +1049,7 @@ impl Renderer {
             shadow_object_pipeline,
             globals_buffer,
             globals_group,
+            weather_texture,
             shadow_read_group,
             empty_group,
             cascade_buffers,
@@ -1162,6 +1196,47 @@ impl Renderer {
     /// Oublie tous les chunks : la planete a change.
     pub fn clear_world(&mut self) {
         self.chunks.clear();
+    }
+
+    /// La nebulosite de la planete : `at` rend la part de ciel couverte (0 a 1) dans une direction.
+    pub fn set_weather(&mut self, at: impl Fn(glam::DVec3) -> [f32; 4]) {
+        let n = WEATHER_SIZE as usize;
+        for face in 0..6u32 {
+            let mut data = vec![0u8; n * n * 4];
+            for y in 0..n {
+                for x in 0..n {
+                    // Convention des textures cubiques : u vers la droite, v vers le bas.
+                    let (u, v) = ((x as f64 + 0.5) / n as f64 * 2.0 - 1.0, (y as f64 + 0.5) / n as f64 * 2.0 - 1.0);
+                    let dir = match face {
+                        0 => glam::DVec3::new(1.0, -v, -u),
+                        1 => glam::DVec3::new(-1.0, -v, u),
+                        2 => glam::DVec3::new(u, 1.0, v),
+                        3 => glam::DVec3::new(u, -1.0, -v),
+                        4 => glam::DVec3::new(u, -v, 1.0),
+                        _ => glam::DVec3::new(-u, -v, -1.0),
+                    };
+                    let v = at(dir.normalize());
+                    for c in 0..4 {
+                        data[(y * n + x) * 4 + c] = (v[c].clamp(0.0, 1.0) * 255.0).round() as u8;
+                    }
+                }
+            }
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.weather_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x: 0, y: 0, z: face },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &data,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(WEATHER_SIZE * 4),
+                    rows_per_image: Some(WEATHER_SIZE),
+                },
+                wgpu::Extent3d { width: WEATHER_SIZE, height: WEATHER_SIZE, depth_or_array_layers: 1 },
+            );
+        }
     }
 
     /// Envoie au GPU les nouveaux chunks et libere ceux qui sont sortis du cache.
@@ -1393,6 +1468,12 @@ impl Renderer {
                 self.config.height as f32,
             ),
             camera_km: (cam * 0.001).as_vec3().extend((world.generator.params.seed % 1000) as f32 * 37.1),
+            weather: Vec4::new(
+                sky.weather.season,
+                if sky.weather.sheltered { 0.0 } else { sky.weather.rain },
+                sky.weather.snow,
+                sky.weather.wet,
+            ),
         };
         self.queue.write_buffer(&self.globals_buffer, 0, bytemuck::bytes_of(&globals));
         for (buffer, m) in self.cascade_buffers.iter().zip(&cascades) {
@@ -1727,6 +1808,7 @@ impl Renderer {
             pass.set_pipeline(&self.post_pipeline);
             pass.set_bind_group(0, &self.globals_group, &[]);
             pass.set_bind_group(1, &self.targets.post_group, &[]);
+            pass.set_bind_group(2, &self.targets.depth_group, &[]);
             pass.draw(0..3, 0..1);
         }
 
@@ -1854,8 +1936,8 @@ mod tests {
 
     #[test]
     fn globals_size_matches_the_wgsl_struct() {
-        // 5 mat4 (2 + 3 cascades) + 7 vec4 : a garder aligne avec common.wgsl.
-        assert_eq!(std::mem::size_of::<Globals>(), 5 * 64 + 7 * 16);
+        // 5 mat4 (2 + 3 cascades) + 8 vec4 : a garder aligne avec common.wgsl.
+        assert_eq!(std::mem::size_of::<Globals>(), 5 * 64 + 8 * 16);
     }
 
     #[test]

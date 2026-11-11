@@ -3,6 +3,7 @@
 
 use super::chunk::{encode_color, NodeId};
 use super::city::{City, Ground};
+use super::climate::Koppen;
 use super::generator::{planet_radius, smoothstep, Biome, Generator};
 use super::noise::{hash_seed, Rng};
 use bytemuck::{Pod, Zeroable};
@@ -32,9 +33,51 @@ pub enum Kind {
     Palm = 8,
     TallGrass = 9,
     Acacia = 10,
+    Cypress = 11,
+    StonePine = 12,
+    Olive = 13,
+    Baobab = 14,
+    Kapok = 15,
+    Willow = 16,
+    ScotsPine = 17,
+    Maple = 18,
+    Beech = 19,
+    Poplar = 20,
+    Larch = 21,
+    Sequoia = 22,
+    Cedar = 23,
+    Eucalyptus = 24,
+    DragonTree = 25,
 }
 
-pub const KIND_COUNT: usize = 11;
+pub const KIND_COUNT: usize = 26;
+
+/// Alpha de la teinte d'un arbre, lu par le shader : 0 pour les herbes, 200 pour les palmes (feuilles plates),
+/// 255 pour les persistants et les rochers. Les feuillus caducs prennent leurs couleurs d'automne et perdent
+/// leurs feuilles la ou l'hiver est froid : en or (bouleau, saule, peuplier, meleze), en melange d'or, d'orange
+/// et de brun (chene, hetre) ou en rouge (erable).
+pub const TINT_PALM: u8 = 200;
+pub const TINT_GOLD: u8 = 250;
+pub const TINT_MIXED: u8 = 251;
+pub const TINT_RED: u8 = 252;
+
+impl Kind {
+    /// Les arbres, par opposition aux buissons, rochers et herbes.
+    pub fn is_tree(self) -> bool {
+        !matches!(self, Kind::Bush | Kind::Cactus | Kind::Rock | Kind::Grass | Kind::Flower | Kind::TallGrass)
+    }
+
+    /// Alpha de la teinte : voir [`TINT_GOLD`].
+    pub fn tint_code(self) -> u8 {
+        match self {
+            Kind::Palm => TINT_PALM,
+            Kind::Birch | Kind::Willow | Kind::Poplar | Kind::Larch => TINT_GOLD,
+            Kind::Oak | Kind::Beech => TINT_MIXED,
+            Kind::Maple => TINT_RED,
+            _ => 255,
+        }
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -122,14 +165,12 @@ fn street_trees(
             }
             let v = 0.85 + 0.3 * rng.f32();
             let green = [v * v * 0.95, v * v, v * v * 0.8];
-            let scale = 0.7 + 0.25 * rng.f32();
+            let scale = 0.5 + 0.2 * rng.f32();
             let pos = dir * (planet_radius() + surface.height as f64 + 0.1) - center;
-            out.push(ObjectInstance {
-                pos: pos.as_vec3().to_array(),
-                scale,
-                yaw: rng.range(0.0, std::f32::consts::TAU),
-                tint: encode_color(green.map(|c| c * 0.25)),
-            });
+            let mut tint = encode_color(green.map(|c| c * 0.25));
+            tint[3] = Kind::Oak.tint_code();
+            let yaw = rng.range(0.0, std::f32::consts::TAU);
+            out.push(ObjectInstance { pos: pos.as_vec3().to_array(), scale, yaw, tint });
         }
     }
 }
@@ -157,64 +198,183 @@ pub fn build_trees(gen: &Generator, cell: NodeId) -> CellObjects {
                 continue;
             }
             let climate = gen.climate(dir, h);
-            if climate.temperature < 0.1 {
+            if climate.hot < 3.0 {
                 continue;
             }
             let biome = gen.biome(climate);
-            let mut density =
-                gen.tree_cover(biome, gen.woods(dir), climate.temperature) * gen.forest_share(dir, surface.ridge);
+            let koppen = climate.koppen();
+            let mut density = gen.tree_cover(&climate, gen.woods(dir)) * gen.forest_share(dir, surface.ridge);
+            // Les pins sylvestres aiment les sols secs et les hivers rudes ; les sapins et epiceas, l'humidite.
+            let dry_pines = if koppen == Koppen::Continental || climate.aridity() < 0.9 { 0.55 } else { 0.25 };
+            let alpine = smoothstep(1100.0, 1700.0, h);
             let mut kind = match biome {
+                // Foret tropicale : une canopee de feuillus percee de geants emergents, des palmiers en sous-bois.
                 Biome::Jungle => {
-                    if species < 0.22 {
+                    if species < 0.07 {
+                        Kind::Kapok
+                    } else if species < 0.25 {
                         Kind::Palm
                     } else {
                         Kind::Oak
                     }
                 }
-                Biome::Forest => {
-                    let pines = 0.03 + 0.72 * gen.stand(dir);
-                    if species < pines {
-                        Kind::Pine
-                    } else if species < pines + 0.22 {
-                        Kind::Birch
+                // Climat mediterraneen : pins parasols, cypres et oliviers parmi les chenes verts, cedres en
+                // altitude.
+                Biome::Forest if koppen == Koppen::Mediterranean => {
+                    if species < 0.22 {
+                        Kind::StonePine
+                    } else if species < 0.34 {
+                        Kind::Cypress
+                    } else if species < 0.5 {
+                        Kind::Olive
+                    } else if species < 0.5 + 0.4 * smoothstep(500.0, 1200.0, h) {
+                        Kind::Cedar
                     } else {
                         Kind::Oak
+                    }
+                }
+                Biome::Forest => {
+                    let pines = (0.03 + 0.72 * gen.stand(dir) + 0.4 * alpine).min(0.95);
+                    if species < pines {
+                        // Coniferes : sequoias geants des cotes tres arrosees et douces, pins sylvestres des sols
+                        // secs, melezes en montagne et dans le froid, sapins et epiceas ailleurs.
+                        let sub = species / pines;
+                        let larch = 0.15 + 0.4 * alpine + 0.2 * smoothstep(-5.0, -15.0, climate.cold);
+                        if climate.rain > 1700.0 && climate.cold > -2.0 && climate.hot < 24.0 && sub < 0.35 {
+                            Kind::Sequoia
+                        } else if sub < dry_pines {
+                            Kind::ScotsPine
+                        } else if sub < dry_pines + larch {
+                            Kind::Larch
+                        } else {
+                            Kind::Pine
+                        }
+                    } else {
+                        // Feuillus : hetres dans les climats oceaniques, erables, bouleaux et chenes.
+                        let u = (species - pines) / (1.0 - pines);
+                        let beech = if koppen == Koppen::Temperate { 0.3 } else { 0.08 };
+                        if u < 0.2 {
+                            Kind::Birch
+                        } else if u < 0.2 + beech {
+                            Kind::Beech
+                        } else if u < 0.38 + beech {
+                            Kind::Maple
+                        } else {
+                            Kind::Oak
+                        }
                     }
                 }
                 Biome::Taiga => {
+                    let larch = if climate.cold < -15.0 { 0.45 } else { 0.15 };
                     if species < 0.12 {
                         Kind::Birch
+                    } else if species < 0.12 + larch {
+                        Kind::Larch
+                    } else if species < 0.12 + larch + 0.5 * dry_pines {
+                        Kind::ScotsPine
                     } else {
                         Kind::Pine
                     }
                 }
-                Biome::Grassland => {
-                    if species < 0.5 {
-                        Kind::Pine
+                // Pays chauds et secs : dragonniers, acacias et eucalyptus ; ailleurs, bosquets et haies.
+                Biome::Grassland if climate.cold > 10.0 => {
+                    if species < 0.2 {
+                        Kind::DragonTree
                     } else if species < 0.65 {
+                        Kind::Acacia
+                    } else {
+                        Kind::Eucalyptus
+                    }
+                }
+                Biome::Grassland => {
+                    if species < 0.25 {
+                        Kind::ScotsPine
+                    } else if species < 0.38 {
+                        Kind::Pine
+                    } else if species < 0.5 {
                         Kind::Birch
+                    } else if species < 0.62 && climate.hot > 15.0 {
+                        Kind::Poplar
+                    } else if species < 0.74 {
+                        Kind::Maple
                     } else {
                         Kind::Oak
                     }
                 }
+                // Savane : des acacias, de grands baobabs isoles dans les savanes seches, des eucalyptus dans les
+                // plus humides.
                 Biome::Savanna => {
-                    if species < 0.82 {
+                    if species < 0.08 && climate.aridity() < 0.8 {
+                        Kind::Baobab
+                    } else if species < 0.2 && climate.rain > 800.0 {
+                        Kind::Eucalyptus
+                    } else if species < 0.82 {
                         Kind::Acacia
                     } else {
                         Kind::Oak
                     }
                 }
+                // Cactus et rares dragonniers des deserts chauds ; buissons ras des deserts froids.
                 Biome::Desert => {
                     density = 0.012;
-                    Kind::Cactus
+                    if climate.mean > 15.0 {
+                        if species < 0.12 {
+                            Kind::DragonTree
+                        } else {
+                            Kind::Cactus
+                        }
+                    } else {
+                        Kind::Bush
+                    }
                 }
                 Biome::Tundra => {
                     density = 0.03;
                     Kind::Bush
                 }
+                // Maquis et garrigue : pins parasols, cypres, oliviers, chenes verts et beaucoup de buissons ;
+                // cedres en altitude, eucalyptus la ou l'hiver est doux.
+                Biome::Shrubland => {
+                    if species < 0.12 {
+                        Kind::StonePine
+                    } else if species < 0.2 {
+                        Kind::Cypress
+                    } else if species < 0.34 {
+                        Kind::Olive
+                    } else if species < 0.42 && h > 600.0 {
+                        Kind::Cedar
+                    } else if species < 0.5 && climate.cold > 8.0 {
+                        Kind::Eucalyptus
+                    } else if species < 0.55 {
+                        Kind::Oak
+                    } else {
+                        Kind::Bush
+                    }
+                }
+                Biome::Ice => continue,
             };
+            // Le long des rivieres, une foret-galerie : des saules dans les pays temperes, des palmiers dans les
+            // oasis des deserts chauds.
+            if surface.valley > 0.45 && species * 3.7 % 1.0 < surface.valley {
+                match biome {
+                    Biome::Forest | Biome::Grassland | Biome::Taiga | Biome::Shrubland if climate.hot > 12.0 => {
+                        kind = if species < 0.4 {
+                            Kind::Willow
+                        } else if species < 0.65 && climate.hot > 15.0 {
+                            Kind::Poplar
+                        } else {
+                            kind
+                        };
+                        density = density.max(0.22 * surface.valley);
+                    }
+                    Biome::Desert | Biome::Savanna if climate.cold > 10.0 => {
+                        kind = Kind::Palm;
+                        density = density.max(0.18 * surface.valley);
+                    }
+                    _ => {}
+                }
+            }
             // Des palmiers sur les cotes chaudes.
-            if climate.temperature > 0.72 && h < 18.0 && species < 0.5 {
+            if climate.cold > 16.0 && climate.aridity() > 0.2 && h < 18.0 && species < 0.5 {
                 (kind, density) = (Kind::Palm, density.max(0.1));
             }
 
@@ -222,7 +382,7 @@ pub fn build_trees(gen: &Generator, cell: NodeId) -> CellObjects {
             // En ville, les arbres ne poussent que dans les parcs et les jardins.
             let ground = if cities.is_empty() { Ground::Wild } else { gen.cities.ground(dir, gen) };
             // Rien ne pousse sur une autoroute ni sur ses accotements.
-            if gen.cities.highways.clearance(dir).is_some_and(|d| d < 12.0) {
+            if gen.cities.highways.open_clearance(gen, dir).is_some_and(|d| d < 12.0) {
                 continue;
             }
             // Ni sur les circuits ni dans leurs degagements.
@@ -237,8 +397,18 @@ pub fn build_trees(gen: &Generator, cell: NodeId) -> CellObjects {
                 Ground::Wild => {}
                 Ground::Park | Ground::Garden => {
                     density = if ground == Ground::Park { 0.11 } else { 0.03 };
-                    if matches!(kind, Kind::Cactus | Kind::Bush | Kind::Pine) && biome != Biome::Taiga {
-                        kind = if species < 0.3 { Kind::Birch } else { Kind::Oak };
+                    let wild = matches!(
+                        kind,
+                        Kind::Cactus | Kind::Bush | Kind::Pine | Kind::Baobab | Kind::Kapok | Kind::Sequoia | Kind::Larch
+                    );
+                    if wild && biome != Biome::Taiga {
+                        kind = if species < 0.3 {
+                            Kind::Birch
+                        } else if species < 0.55 {
+                            Kind::Maple
+                        } else {
+                            Kind::Oak
+                        };
                     }
                 }
                 _ => continue,
@@ -267,46 +437,36 @@ pub fn build_trees(gen: &Generator, cell: NodeId) -> CellObjects {
                 continue;
             }
 
-            // Age du peuplement : jeunes recrus, futaies adultes, vieux arbres isoles plus grands.
-            let age = if matches!(kind, Kind::Pine | Kind::Oak | Kind::Birch | Kind::Acacia) {
+            // Age du peuplement : les maillages ont la taille d'arbres adultes ; jeunes recrus plus petits, vieux
+            // arbres isoles plus grands.
+            let age = if kind.is_tree() && kind != Kind::Palm {
                 let tone = ((gen.canopy_tone(dir) - 0.55) / 0.8).clamp(0.0, 1.0);
-                let lone = if density < 0.15 { 1.15 } else { 1.0 };
-                (0.5 + 0.65 * tone) * lone
+                let lone = if density < 0.15 { 1.1 } else { 1.0 };
+                (0.72 + 0.38 * tone) * lone
             } else {
                 1.0
             };
             let scale = age
                 * match kind {
-                    Kind::Pine => 0.6 + 1.1 * scale_r * scale_r.sqrt(),
-                    Kind::Oak => 0.6 + 0.95 * scale_r,
-                    Kind::Acacia => 0.7 + 0.6 * scale_r,
-                    Kind::Birch => 0.8 + 0.6 * scale_r,
-                    Kind::Palm => 0.75 + 0.5 * scale_r,
+                    Kind::Sequoia => 0.65 + 0.55 * scale_r,
+                    Kind::Kapok => 0.8 + 0.35 * scale_r,
+                    Kind::Olive | Kind::Baobab => 0.7 + 0.6 * scale_r,
+                    Kind::Palm => 0.65 + 0.5 * scale_r,
                     Kind::Bush => 0.6 + 0.8 * scale_r,
                     Kind::Cactus => 0.7 + 0.6 * scale_r,
                     Kind::Rock => 0.4 + 1.6 * scale_r * scale_r,
                     Kind::Grass | Kind::Flower | Kind::TallGrass => 1.0,
+                    _ => 0.75 + 0.45 * scale_r,
                 };
-            // Chaque arbre a sa nuance, du vert bleute au vert jaune.
+            // Chaque arbre a sa nuance, du vert bleute au vert jaune. L'automne et l'hiver sont calcules par le
+            // shader, selon le moment de l'annee.
             let v = (0.72 + 0.46 * tint_r) * gen.canopy_tone(dir);
             let tint = if kind == Kind::Rock {
                 let (color, _) = gen.rock_color(dir);
                 // Le maillage du rocher est gris moyen : on lui rend la couleur de la roche du lieu.
                 [color[0] * 7.0 * v * v, color[1] * 7.0 * v * v, color[2] * 7.0 * v * v]
             } else {
-                let green = [v * v * (0.8 + 0.5 * hue), v * v, v * v * (1.05 - 0.4 * hue)];
-                // Foret d'automne : chaque feuillu vire a sa facon, de l'or au rouge. Les resineux restent verts.
-                let fall = if matches!(kind, Kind::Oak | Kind::Birch) { gen.autumn(dir, climate) } else { 0.0 };
-                if species * 7.3 % 1.0 < fall * 0.9 {
-                    let turned = [3.3, 1.75 - 1.25 * hue, 0.25];
-                    if kind == Kind::Birch {
-                        [turned[0] * 0.8, 1.55, 0.2]
-                    } else {
-                        turned
-                    }
-                } else {
-                    green
-                }
+                [v * v * (0.8 + 0.5 * hue), v * v, v * v * (1.05 - 0.4 * hue)]
             };
             let pos = dir * (planet_radius() + h as f64 - 0.12 * scale as f64) - center;
             out[kind as usize].push(ObjectInstance {
@@ -315,9 +475,7 @@ pub fn build_trees(gen: &Generator, cell: NodeId) -> CellObjects {
                 yaw,
                 tint: {
                     let mut encoded = encode_color(tint.map(|c| c * 0.25));
-                    if kind == Kind::Palm {
-                        encoded[3] = 200;
-                    }
+                    encoded[3] = kind.tint_code();
                     encoded
                 },
             });
@@ -341,8 +499,11 @@ pub fn build_grass(gen: &Generator, cell: NodeId) -> GrassCell {
     // Le climat ne varie pas a l'echelle d'une cellule.
     let climate = gen.climate(center_dir, gen.height(center_dir));
     let biome = gen.biome(climate);
-    let grows = matches!(biome, Biome::Grassland | Biome::Forest | Biome::Savanna | Biome::Taiga | Biome::Jungle);
-    if !grows || climate.temperature < 0.15 {
+    let grows = matches!(
+        biome,
+        Biome::Grassland | Biome::Forest | Biome::Savanna | Biome::Taiga | Biome::Jungle | Biome::Shrubland
+    );
+    if !grows || climate.hot < 6.0 {
         return GrassCell { center, tufts, flowers, stalks };
     }
 
@@ -392,7 +553,7 @@ pub fn build_grass(gen: &Generator, cell: NodeId) -> GrassCell {
             if city && !matches!(gen.cities.ground(dir, gen), Ground::Wild | Ground::Park | Ground::Garden) {
                 continue;
             }
-            if gen.cities.highways.clearance(dir).is_some_and(|d| d < 1.5) {
+            if gen.cities.highways.open_clearance(gen, dir).is_some_and(|d| d < 1.5) {
                 continue;
             }
             // Pelouse tondue autour des circuits.

@@ -223,7 +223,7 @@ impl<G: Game> ApplicationHandler for App<G> {
             Ok(w) => Arc::new(w),
             Err(e) => return self.fail(event_loop, e.into()),
         };
-        let renderer = match pollster::block_on(Renderer::new(window.clone(), self.config.vsync)) {
+        let mut renderer = match pollster::block_on(Renderer::new(window.clone(), self.config.vsync)) {
             Ok(r) => r,
             Err(e) => return self.fail(event_loop, e),
         };
@@ -231,6 +231,7 @@ impl<G: Game> ApplicationHandler for App<G> {
 
         crate::world::generator::set_planet_radius(self.config.planet.radius());
         let generator = Arc::new(Generator::new(self.config.planet));
+        renderer.set_weather(|dir| crate::weather::encode_climate(&generator, dir));
         let streamer = Streamer::new(generator.clone(), self.config.stream);
         let ui_ctx = egui::Context::default();
         let ui_winit = egui_winit::State::new(
@@ -438,8 +439,8 @@ impl State {
         let day = ((t - 0.25) / 0.04).clamp(0.0, 1.0) * ((0.77 - t) / 0.04).clamp(0.0, 1.0);
         let dry = here.water_level > here.height;
         s.leaves = wooded * near;
-        s.birds = if dry || climate.temperature < -5.0 { 0.0 } else { (0.15 + 0.85 * wooded) * day * near };
-        s.insects = if dry || climate.temperature < 8.0 { 0.0 } else { (0.4 + 0.6 * wooded) * (1.0 - day) * near };
+        s.birds = if dry || climate.mean < -5.0 { 0.0 } else { (0.15 + 0.85 * wooded) * day * near };
+        s.insects = if dry || climate.mean < 8.0 { 0.0 } else { (0.4 + 0.6 * wooded) * (1.0 - day) * near };
         s.city = gen.cities.nearest(up).map_or(0.0, |(_, d)| (1.0 - d as f32 / 1500.0).clamp(0.0, 1.0))
             * (1.0 - above / 600.0).clamp(0.0, 1.0);
     }
@@ -486,6 +487,8 @@ impl State {
         self.generator = Arc::new(generator);
         self.streamer = Streamer::new(self.generator.clone(), stream);
         self.renderer.clear_world();
+        let weather = self.generator.clone();
+        self.renderer.set_weather(|dir| crate::weather::encode_climate(&weather, dir));
         self.menu.set_map(ui::planet_maps(&self.generator));
         self.events.push(GameEvent::PlanetChanged);
         self.idle_frames = 0;
@@ -526,6 +529,14 @@ impl State {
             mark = t;
         };
         self.sky.advance(step);
+        let generator = self.generator.clone();
+        self.sky.weather.update(&generator, self.camera.position, step);
+        let (up, alt) = (self.camera.up(), self.camera.position.length() - crate::world::generator::planet_radius());
+        self.sky.weather.sheltered = generator
+            .cities
+            .highways
+            .tunnel(&generator, up)
+            .is_some_and(|t| alt < t.road + crate::world::highway::VAULT);
         self.sound.car = None;
         {
             let mut ctx = self.context();
@@ -575,6 +586,7 @@ impl State {
         self.hud.latitude = lat;
         self.hud.longitude = lon;
         self.hud.local_time = self.sky.local_time(self.camera.up());
+        self.hud.weather = self.sky.weather.describe();
         self.hud.seed = self.generator.params.seed;
         self.hud.render_distance = self.streamer.config.render_distance;
         let up = self.camera.up();
@@ -680,6 +692,10 @@ impl State {
                 MenuAction::Resume => self.set_menu(false),
                 MenuAction::NewPlanet(params) => self.request_planet(params),
                 MenuAction::SetRenderDistance(metres) => self.streamer.config.set_render_distance(metres),
+                MenuAction::SetSeason(season) => {
+                    self.sky.weather.season = season;
+                    self.sky.declination = self.sky.weather.declination();
+                }
                 MenuAction::GoToSpace => {
                     self.events.push(GameEvent::GoToSpace);
                     self.set_menu(false);

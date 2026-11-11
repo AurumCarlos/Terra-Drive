@@ -142,6 +142,11 @@ fn fs(i: VsOut) -> @location(0) vec4f {
         let gaps = mix(0.34, 1.3, smoothstep(0.3, 0.72, crowns));
         let hue = mix(vec3f(1.14, 0.94, 0.7), vec3f(0.84, 1.08, 1.02), smoothstep(0.3, 0.7, clumps * 0.6 + t2048.a * 0.4));
         albedo *= mix(vec3f(1.0), hue * gaps, forest);
+        // Saisons des feuillus, vus de loin : environ la moitie de la foret, selon les massifs.
+        let leaves = leaf_season(up, i.altitude, clumps - 0.5);
+        let broadleaf = forest * mix(0.25, 0.75, smoothstep(0.35, 0.65, clumps));
+        albedo *= mix(vec3f(1.0), mix(vec3f(3.0, 1.5, 0.3), vec3f(2.5, 0.7, 0.2), t2048.a), leaves.y * broadleaf);
+        albedo = mix(albedo, vec3f(0.075, 0.062, 0.05), leaves.x * broadleaf * 0.8);
     }
 
     // Grain de proximite : terre, cailloux et herbes rases.
@@ -149,6 +154,17 @@ fn fs(i: VsOut) -> @location(0) vec4f {
     albedo *= 0.82 + 0.36 * fine;
     // Sous les herbes, le sol est dans leur ombre : plus sombre que leurs brins.
     albedo *= mix(0.6, 1.0, max(smoothstep(180.0, 340.0, dist), 1.0 - open_land));
+
+    // Saisons : la neige tient sur les replats l'hiver, en plaques au bord de son domaine ; la foret la cache
+    // en partie.
+    let snow = snow_cover(up, i.altitude, dist);
+    if snow > 0.0 {
+        let patchy = smoothstep(0.25, 0.75, snow + (t128.a - 0.5) * 0.5 + (t512.a - 0.5) * 0.4);
+        let lies = patchy * smoothstep(0.62, 0.82, dot(n, up)) * (1.0 - forest * 0.55);
+        albedo = mix(albedo, vec3f(0.78, 0.8, 0.85) * (0.92 + 0.12 * fine), lies);
+    }
+    // Sol mouille : plus sombre.
+    albedo *= 1.0 - 0.32 * wetness(dist) * (1.0 - snow);
 
     let lit = shade(albedo, n, i.rel, up);
     return vec4f(apply_atmosphere(lit, i.rel, 5), 1.0);

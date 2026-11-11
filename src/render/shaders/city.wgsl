@@ -784,6 +784,8 @@ fn fs(i: VsOut) -> @location(0) vec4f {
     // Les lumieres s'allument au crepuscule, pas en plein jour.
     let night = 1.0 - smoothstep(-0.05, 0.1, dot(up, g.sun_dir.xyz));
     let m = i.mat.x;
+    // Sous terre (tunnel) : l'alpha porte la part du jour qui entre encore, de 0 a 0.47.
+    let indoor = i.color.a < 0.5 && m != 1u && m < 18u;
     let px = max(length(fwidth(i.uv)), 1e-4);
     // Pour les chaussees : taille du pixel en travers et le long, separement.
     let px_road = fwidth(i.uv);
@@ -833,6 +835,9 @@ fn fs(i: VsOut) -> @location(0) vec4f {
         case 9u: {
             look.albedo = i.color.rgb * 0.3;
             look.emit = vec3f(1.0, 0.82, 0.55) * 8.0 * night;
+            if indoor {
+                look.emit = vec3f(1.0, 0.86, 0.62) * 5.0;
+            }
         }
         case 10u: {
             // Garde-corps : barreaux de fer, palissade blanche ou verre.
@@ -931,6 +936,13 @@ fn fs(i: VsOut) -> @location(0) vec4f {
     }
 
     var lit = shade(look.albedo, look.n, i.rel, up);
+    if indoor {
+        // Lampes au sodium sous la voute, et le jour qui entre par la tete du tunnel.
+        let day = clamp(i.color.a / 0.47, 0.0, 1.0);
+        let lamps = vec3f(1.0, 0.8, 0.55) * (0.55 + 0.25 * max(dot(look.n, up), 0.0));
+        lit = mix(look.albedo * lamps, lit, day * day);
+        look.mirror = 0.0;
+    }
     if look.mirror > 0.0 {
         let r = reflect(view, look.n);
         let c = max(dot(-view, look.n), 0.0);

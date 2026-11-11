@@ -57,14 +57,29 @@ impl StreamConfig {
 }
 
 /// Objets qui bloquent le joueur, avec leur rayon a l'echelle 1.
-const SOLID_KINDS: [(Kind, f64); 7] = [
-    (Kind::Pine, 0.32),
-    (Kind::Oak, 0.48),
-    (Kind::Birch, 0.18),
-    (Kind::Palm, 0.24),
-    (Kind::Acacia, 0.26),
+const SOLID_KINDS: [(Kind, f64); 22] = [
+    (Kind::Pine, 0.54),
+    (Kind::Oak, 0.55),
+    (Kind::Birch, 0.22),
+    (Kind::Palm, 0.3),
+    (Kind::Acacia, 0.32),
     (Kind::Cactus, 0.34),
     (Kind::Rock, 1.2),
+    (Kind::Cypress, 0.27),
+    (Kind::StonePine, 0.4),
+    (Kind::Olive, 0.42),
+    (Kind::Baobab, 2.6),
+    (Kind::Kapok, 1.1),
+    (Kind::Willow, 0.55),
+    (Kind::ScotsPine, 0.36),
+    (Kind::Maple, 0.42),
+    (Kind::Beech, 0.45),
+    (Kind::Poplar, 0.45),
+    (Kind::Larch, 0.5),
+    (Kind::Sequoia, 2.6),
+    (Kind::Cedar, 0.65),
+    (Kind::Eucalyptus, 0.5),
+    (Kind::DragonTree, 0.65),
 ];
 
 /// Rayon de la sphere qui cache l'horizon. Plus bas que la mer : le relief sous-marin ne cache rien.

@@ -107,7 +107,12 @@ fn fs(i: VsOut) -> @location(0) vec4f {
     let dist = length(i.rel);
     let view = i.rel / dist;
     let up = normalize(i.up);
-    let ice = smoothstep(0.35, 0.65, i.data.y);
+    // Banquise et lacs geles : la glace suit la saison, avec un mois de retard sur le froid de l'air ; la
+    // glace de toute l'annee (i.data.y) reste en ete.
+    let lagged = season_temperature(up, length(i.rel - g.center.xyz) - g.center.w)
+        + (textureSampleLevel(weather_map, noise_sampler, up, 0.0).b * 60.0 - 30.0)
+        * (cos(6.2831853 * g.weather.x) - cos(6.2831853 * (g.weather.x - 0.08)));
+    let ice = max(smoothstep(0.35, 0.65, i.data.y) * smoothstep(3.0, -2.0, lagged), smoothstep(-1.5, -6.0, lagged));
     let sun = g.sun_dir.xyz;
 
     // Le courant dans le monde. Sur les rivieres, les rides descendent vers l'aval : deux phases

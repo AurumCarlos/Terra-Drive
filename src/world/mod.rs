@@ -3,6 +3,7 @@ pub mod circuit;
 pub mod circuit_data;
 pub mod city;
 pub mod city_mesh;
+pub mod climate;
 pub mod cube;
 pub mod fast_hash;
 pub mod generator;

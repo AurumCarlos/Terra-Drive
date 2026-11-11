@@ -2,9 +2,11 @@
 //! donc utilisable depuis n'importe quel thread, sans jamais stocker le monde.
 
 use super::city::Cities;
+pub use super::climate::{Climate, Koppen};
+use super::climate::ClimateMap;
 use super::cube::CubeField;
 use super::hydrology::{Hydrology, MAX_WIDEN, SHORE};
-use super::landforms::{moisture_field, terrace, Cells, Province, Provinces, Volcanoes};
+use super::landforms::{terrace, Cells, Province, Provinces, Volcanoes};
 use super::noise::{hash_seed, Noise};
 use super::tectonics::{self, Boundary, Tectonics};
 use glam::{DVec3, Vec3};
@@ -71,6 +73,10 @@ pub fn set_creating_radius(r: f64) {
 }
 /// Altitude de la surface de l'ocean.
 pub const SEA_LEVEL: f32 = 0.0;
+/// Profondeur gagnee par l'avant-cote, des plages aux cotes rocheuses (m), et la profondeur de la grille sur
+/// laquelle elle s'ajoute (m) : quelques centaines de metres au large.
+const SHOREFACE_DEPTH: (f32, f32) = (14.0, 36.0);
+const SHOREFACE_SCALE: f32 = 2.0;
 /// Bornes sures du relief, valables avant d'avoir calcule un chunk.
 pub const MIN_HEIGHT: f32 = -7000.0;
 pub const MAX_HEIGHT: f32 = 24000.0;
@@ -142,32 +148,27 @@ impl Default for PlanetParams {
     }
 }
 
+/// Les grands paysages vegetaux, tires du climat (Koppen-Geiger et indice d'aridite).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Biome {
+    /// Desert : presque rien ne pousse.
     Desert,
+    /// Savane et brousse a epineux des tropiques a saison seche.
     Savanna,
+    /// Foret tropicale humide.
     Jungle,
+    /// Prairie et steppe.
     Grassland,
+    /// Foret temperee, de feuillus et de coniferes.
     Forest,
+    /// Foret boreale de coniferes.
     Taiga,
+    /// Toundra : mousses et arbustes nains, au-dela de la limite des arbres.
     Tundra,
-}
-
-/// Biomes places dans le plan (temperature, humidite). Couleurs en lineaire.
-const BIOMES: [(Biome, f32, f32, [f32; 3]); 7] = [
-    (Biome::Desert, 0.85, 0.12, [0.50, 0.33, 0.16]),
-    (Biome::Savanna, 0.82, 0.42, [0.32, 0.23, 0.075]),
-    (Biome::Jungle, 0.95, 0.85, [0.03, 0.095, 0.025]),
-    (Biome::Grassland, 0.55, 0.42, [0.13, 0.17, 0.05]),
-    (Biome::Forest, 0.55, 0.78, [0.06, 0.115, 0.035]),
-    (Biome::Taiga, 0.28, 0.60, [0.07, 0.11, 0.06]),
-    (Biome::Tundra, 0.12, 0.25, [0.20, 0.17, 0.11]),
-];
-
-#[derive(Clone, Copy, Debug)]
-pub struct Climate {
-    pub temperature: f32,
-    pub moisture: f32,
+    /// Maquis et garrigue des climats mediterraneens.
+    Shrubland,
+    /// Glace et neiges eternelles.
+    Ice,
 }
 
 /// Nombre d'octaves utiles pour un espacement de sommets donne : calculer des details plus
@@ -192,6 +193,9 @@ pub struct Detail {
 }
 
 /// Longueur d'onde et amplitude des meandres, en metres.
+/// Altitude de la grille sous laquelle une riviere devient estuaire, en metres.
+const ESTUARY_RISE: f32 = 8.0;
+
 const MEANDERS: [(f64, f64); 3] = [(11_000.0, 3_500.0), (3_000.0, 1_000.0), (520.0, 130.0)];
 
 /// Le sol et l'eau en un point de la planete.
@@ -296,6 +300,8 @@ struct Shape {
     height: f32,
     /// Crete de montagne, de 0 a 1.
     crest: f32,
+    /// Energie du relief, de 0 (plaine) a 1 (pays de montagne).
+    energy: f32,
 }
 
 pub struct Generator {
@@ -327,10 +333,10 @@ pub struct Generator {
     sand: Cells,
     ponds: Cells,
     tint: Noise,
-    temperature: Noise,
+    /// Temperatures, pluies et vents simules.
+    pub weather: ClimateMap,
+    /// Variations locales de la pluie.
     moisture: Noise,
-    /// Humidite apportee par les vents.
-    wet: CubeField,
     patches: Noise,
     groves: Noise,
 }
@@ -341,33 +347,6 @@ pub struct Site {
     pub hue: f32,
     pub rock: [f32; 3],
     pub strata: f32,
-}
-
-/// Le climat seul : la simulation de l'eau en a besoin avant que la planete n'existe.
-struct ClimateNoise<'a> {
-    temperature: &'a Noise,
-    moisture: &'a Noise,
-    wet: &'a CubeField,
-    params: PlanetParams,
-}
-
-impl ClimateNoise<'_> {
-    fn at(&self, dir: DVec3, height: f32) -> Climate {
-        let at = dir * planet_radius();
-        let lat = dir.y as f32;
-        let t = 1.0 - lat * lat * 0.92 + self.temperature.fbm(at / 3.0e6, 4) * 0.28 + self.params.temperature;
-        // Bandes de Hadley : humide a l'equateur et vers 60 degres, sec vers 30 degres.
-        let band = (lat.clamp(-1.0, 1.0).asin() * 6.0).cos() * 0.2;
-        let carried = self.wet.sample_linear(dir).clamp(0.0, 1.0);
-        let m = 0.2 + carried.powf(0.7) * 0.55 + self.moisture.fbm(at / 2.5e6, 5) * 0.6 + band;
-        Climate { temperature: (t - height.max(0.0) / 7000.0).clamp(0.0, 1.0), moisture: m.clamp(0.0, 1.0) }
-    }
-
-    /// Pluie, 1 en moyenne : les reliefs arretent les nuages, les deserts ne recoivent presque rien.
-    fn rain(&self, dir: DVec3, height: f32) -> f32 {
-        let m = self.at(dir, 0.0).moisture;
-        (m * m * 2.6 + 0.04) * (1.0 + height.clamp(0.0, 3000.0) / 1100.0)
-    }
 }
 
 /// A appeler au debut d'un thread de generation : il passe sous la priorite normale, pour que le
@@ -459,7 +438,7 @@ impl Generator {
     fn create(params: PlanetParams) -> Self {
         let layer = |i: i64| Noise::new(hash_seed(params.seed, i, 0x5EED));
         let cells = |i: i64| Cells::new(hash_seed(params.seed, i, 0xCE11));
-        let (temperature, moisture) = (layer(8), layer(9));
+        let moisture = layer(9);
         // TERRA_PROFILE : temps de chaque etape de la creation.
         let profile = std::env::var("TERRA_PROFILE").is_ok();
         let mut clock = std::time::Instant::now();
@@ -471,18 +450,26 @@ impl Generator {
         };
         let plates = tectonics::simulate(params.seed, plate_count(params.seed), (1.0 - params.ocean).clamp(0.03, 0.92));
         step("plaques");
-        let wet = moisture_field(&plates);
         let orogeny = CubeField::from_cells(plates.grid, &plates.orogeny);
-        step("vents");
-        let (water, provinces) = {
-            let climate = ClimateNoise { temperature: &temperature, moisture: &moisture, wet: &wet, params };
-            let water = Hydrology::build(&params, &plates, &|dir, height| climate.rain(dir, height));
-            step("eau");
-            let provinces =
-                Provinces::build(params.seed, &water.elevation, &orogeny, &|dir, height| climate.at(dir, height));
-            step("provinces");
-            (water, provinces)
+        // Un premier climat sur le relief brut des plaques : l'erosion a besoin des pluies. Le climat
+        // definitif est simule ensuite, sur le relief erode.
+        let (water, weather) = {
+            let crust = CubeField::from_cells(plates.grid, &plates.crust);
+            let draft = ClimateMap::build(&params, &|dir| {
+                if crust.sample_linear(dir) > 0.5 {
+                    250.0 + orogeny.sample_linear(dir).clamp(0.0, 1.4).powf(1.25) * 3600.0 * params.relief
+                } else {
+                    -3000.0
+                }
+            });
+            step("climat provisoire");
+            Hydrology::build(&params, &plates, &|dir, height| draft.at(dir, height, 1.0))
         };
+        step("eau et climat");
+        let provinces = Provinces::build(params.seed, &water.elevation, &orogeny, &|dir, height| {
+            weather.at(dir, height, 1.0)
+        });
+        step("provinces");
         let volcanoes = Volcanoes::build(params.seed, &plates, &water.elevation);
         step("volcans");
         let mut gen = Self {
@@ -509,9 +496,8 @@ impl Generator {
             sand: cells(3),
             ponds: cells(4),
             tint: layer(18),
-            temperature,
+            weather,
             moisture,
-            wet,
             patches: layer(10),
             groves: layer(26),
         };
@@ -555,6 +541,22 @@ impl Generator {
         (dir + offset / planet_radius()).normalize()
     }
 
+    /// Le point du trace des rivieres qui passe en `dir` : le lieu deforme par les meandres.
+    pub fn meander(&self, dir: DVec3) -> DVec3 {
+        self.meander_point(dir, &Detail::full())
+    }
+
+    /// Le lieu ou passe un point du trace des rivieres, meandres compris : l'inverse de `meander`.
+    pub fn unbend(&self, target: DVec3) -> DVec3 {
+        let d = Detail::full();
+        let mut p = target;
+        for _ in 0..12 {
+            let moved = self.meander_point(p, &d) - p;
+            p = (target - moved).normalize();
+        }
+        p
+    }
+
     /// Les grandes masses du relief en un point : simulation, chaines de montagnes, collines, volcans.
     fn shape(&self, at: DVec3, d: &Detail, w: &Province) -> Shape {
         let q = at * planet_radius();
@@ -579,20 +581,25 @@ impl Generator {
                 h += m * spur * (250.0 + 950.0 * crest) * self.params.relief;
             }
         }
-        // Le relief varie de region en region : de vraies plaines, mais rares, et des pays bosseles.
+        // L'energie du relief suit la geologie : forte dans les chaines et sur les hautes terres soulevees,
+        // presque nulle dans les bassins bas, ou l'eau a tout aplani. Comme sur Terre, pres de la moitie des
+        // terres sont des plaines ; le reste se partage entre collines, plateaux et montagnes.
         let rugged = (self.warp[2].fbm(q / 7.0e4 + DVec3::splat(11.0), 2) * 1.6 + 0.6).clamp(0.0, 1.0);
         let foothills = smoothstep(0.1, 0.5, o);
-        let swell = w.hills * 620.0
-            + w.glacial * 300.0
-            + w.moor * 210.0
-            + w.badlands * 90.0
-            + w.mesa * 70.0
-            + w.karst * 40.0
-            + w.inselberg * 170.0
-            + w.dunes * 30.0
-            + foothills * 380.0
-            + 120.0
-            + 260.0 * rugged;
+        let upland = smoothstep(200.0, 1200.0, base);
+        let energy = (foothills.max(upland * 0.6) * (0.3 + 0.7 * rugged) + 0.1 * rugged * rugged * rugged).min(1.0);
+        let swell = 14.0
+            + energy
+                * (w.hills * 620.0
+                    + w.glacial * 300.0
+                    + w.moor * 210.0
+                    + w.badlands * 90.0
+                    + w.mesa * 70.0
+                    + w.karst * 40.0
+                    + w.inselberg * 170.0
+                    + w.dunes * 30.0
+                    + foothills * 380.0
+                    + 260.0);
         if d.rolling > 0 {
             // Bruit amorti par sa propre pente (Quilez) : fonds de vallee doux, cretes plus nettes, comme apres l'erosion.
             let r =
@@ -602,7 +609,7 @@ impl Generator {
         if d.knolls > 0 {
             let k = self.hills.eroded(bent / 2400.0 + DVec3::splat(29.0), d.knolls);
             h += (k + 0.3)
-                * (25.0 + 120.0 * rugged + 60.0 * w.hills + 50.0 * foothills)
+                * (5.0 + (20.0 + 120.0 * rugged + 60.0 * w.hills + 50.0 * foothills) * (0.1 + 0.9 * energy))
                 * land
                 * (1.0 - 0.5 * m)
                 * (1.0 - 0.8 * w.dunes)
@@ -611,7 +618,7 @@ impl Generator {
         if let Some((v, share)) = self.volcanoes.at(at) {
             h += (v.summit - h).max(0.0) * share;
         }
-        Shape { height: h, crest }
+        Shape { height: h, crest, energy }
     }
 
     #[inline]
@@ -716,6 +723,7 @@ impl Generator {
         // Grand large : aucune couche suivante ne se verrait a travers l'eau. Sauf les iles volcaniques.
         let volcano = self.volcanoes.at(dir).map_or(0.0, |v| v.1);
         if base < -600.0 && volcano <= 0.0 {
+            out.height = self.shoreface(dir, base);
             return out;
         }
 
@@ -746,6 +754,8 @@ impl Generator {
                     + w.karst * 0.2
                     + w.dunes * 0.02)
                     .max(foothills * 0.45);
+        // Les plaines ne sont pas ravinees : l'eau y coule sans creuser.
+        let carve = carve * (0.06 + 0.94 * shape.energy.max(m));
         let carve = (carve + volcano.min(0.4) * 1.6).min(1.0) * rises * relief.sqrt();
         if d.gullies > 0 && carve > 1e-4 {
             // De pres, la pente vient d'une grille fixe mise en cache : le meme champ pour tous les chunks.
@@ -877,7 +887,9 @@ impl Generator {
         let mut smooth = urban;
 
         // Etangs : le relief s'y creuse autour d'un niveau fixe, ni le maillage ni la position n'y changent rien.
-        {
+        // Un etang plus petit que la maille n'est pas dessine : un seul sommet tombe dedans le changerait
+        // en lac large comme la maille, visible depuis l'orbite.
+        if d.spacing < 320.0 {
             let cells = p / POND_CELL;
             if let Some((center, t, roll)) = self.ponds.pivot(cells, POND_RADIUS) {
                 let at = center.normalize();
@@ -904,7 +916,7 @@ impl Generator {
 
         // Lacs : le relief prend la forme d'une cuvette autour du niveau calcule par la simulation.
         let (mask, lake_level) = self.water.lake_at(bent);
-        if mask > 0.0 {
+        if mask > 0.0 && (d.spacing as f32) < self.water.lake_span(bent).max(13_000.0) * 0.7 {
             let floor = (lake_level - h).clamp(18.0, 130.0);
             let target = if mask < SHORE {
                 lake_level + (SHORE - mask) / SHORE * 30.0
@@ -923,9 +935,28 @@ impl Generator {
         }
 
         // Rivieres : un cone de pente autour du lit taille les versants, quelle que soit leur hauteur.
-        if let Some(river) =
-            self.water.river_at(bent, d.spacing, 1.0 + (MAX_WIDEN - 1.0) * smoothstep(0.06, 0.5, o).max(mesa))
-        {
+        // Pres de la mer, le lit s'evase en estuaire et son niveau rejoint celui de la mer au rivage : l'eau
+        // de mer y remonte. Au large, la riviere s'efface, sans digues.
+        let estuary = 1.0 - smoothstep(0.0, ESTUARY_RISE, base);
+        let offshore = smoothstep(-1.0, -10.0, base);
+        // Dans un estuaire, des berges basses de vase plutot que l'avant-cote abrupte de la mer.
+        let mut mudflat = 0.0;
+        if let Some(mut river) = self.water.river_at(
+            bent,
+            d.spacing,
+            1.0 + (MAX_WIDEN - 1.0) * smoothstep(0.06, 0.5, o).max(mesa),
+            estuary,
+        ) {
+            if estuary > 0.0 {
+                // Le courant faiblit vers la mer : la teinte des rivieres passe a celle de la mer sans couture.
+                let inland = smoothstep(0.0, ESTUARY_RISE * 0.75, base);
+                river.level = SEA_LEVEL + (river.level - SEA_LEVEL) * inland;
+                river.flow *= inland * inland;
+                river.lift *= smoothstep(-2.0, 1.0, base);
+                river.reach *= 1.0 - offshore;
+                river.wet &= river.level > SEA_LEVEL + 0.25;
+                mudflat = river.valley * estuary;
+            }
             out.paint = river.paint;
             out.bank = out.bank.max(river.bank);
             out.valley = river.valley;
@@ -951,26 +982,67 @@ impl Generator {
         if d.fine > 0 {
             h += self.fine.fbm(p / 95.0, d.fine) * 4.0 * shore * plain_detail * (1.0 - smooth * 0.92);
         }
-        out.height = h;
+        out.height = if out.fresh { h } else { lerp(self.shoreface(dir, h), h, mudflat) };
         out
+    }
+
+    /// Avant-cote : sous la mer, le fond plonge vite pres du rivage. La grille globale, a mailles de plusieurs
+    /// kilometres, ne donne qu'une pente de 1 a 5 m par kilometre a la cote : on aurait de l'eau a hauteur de
+    /// cheville sur des kilometres. Sur Terre, le fond atteint 10 a 20 m a quelques centaines de metres d'une
+    /// plage, davantage le long des cotes rocheuses, avant la pente douce du plateau continental. Le profil
+    /// ne depend que de la hauteur : le trait de cote ne bouge pas.
+    fn shoreface(&self, dir: DVec3, h: f32) -> f32 {
+        if h >= SEA_LEVEL {
+            return h;
+        }
+        // Seulement en mer : les cuvettes d'une plaine cotiere, sous le niveau de la mer par endroits, restent
+        // des lagunes peu profondes.
+        let open_sea = smoothstep(1.5, -1.5, self.water.elevation.sample(dir));
+        let steep = SHOREFACE_DEPTH.0 + (SHOREFACE_DEPTH.1 - SHOREFACE_DEPTH.0) * self.provinces.palette.sample_linear(dir);
+        h - steep * open_sea * (1.0 - ((h - SEA_LEVEL) / SHOREFACE_SCALE).exp())
     }
 
     /// Temperature et humidite (0 a 1) a l'altitude `height` au-dessus du lieu `dir`.
     pub fn climate(&self, dir: DVec3, height: f32) -> Climate {
-        ClimateNoise { temperature: &self.temperature, moisture: &self.moisture, wet: &self.wet, params: self.params }
-            .at(dir, height)
+        // La pluie varie d'un pays a l'autre : les limites des biomes ne suivent pas la grille du climat.
+        let at = dir * planet_radius();
+        let local = 1.0 + 0.2 * self.moisture.fbm(at / 2.6e5, 3) + 0.08 * self.moisture.fbm(at / 3.1e4, 2);
+        self.weather.at(dir, height, local)
     }
 
-    /// Le biome le plus proche de ce climat.
+    /// Le paysage vegetal de ce climat. La foret demande un climat humide (indice d'aridite au-dessus de
+    /// 0,65 environ) ; en dessous viennent la prairie, la steppe et la savane.
     pub fn biome(&self, c: Climate) -> Biome {
-        let mut best = (Biome::Grassland, f32::MAX);
-        for (b, t, m, _) in BIOMES {
-            let d = (c.temperature - t).powi(2) + (c.moisture - m).powi(2);
-            if d < best.1 {
-                best = (b, d);
+        let wet = c.aridity();
+        match c.koppen() {
+            Koppen::Ice => Biome::Ice,
+            Koppen::Tundra => Biome::Tundra,
+            Koppen::Desert => Biome::Desert,
+            Koppen::Steppe => {
+                if c.mean > 18.0 {
+                    Biome::Savanna
+                } else {
+                    Biome::Grassland
+                }
             }
+            Koppen::Rainforest => Biome::Jungle,
+            Koppen::Savanna => {
+                if c.rain > 1600.0 && c.driest > 15.0 {
+                    Biome::Jungle
+                } else {
+                    Biome::Savanna
+                }
+            }
+            Koppen::Mediterranean => Biome::Shrubland,
+            Koppen::Temperate | Koppen::Continental => {
+                if wet > 0.62 {
+                    Biome::Forest
+                } else {
+                    Biome::Grassland
+                }
+            }
+            Koppen::Subarctic => Biome::Taiga,
         }
-        best.0
     }
 
     /// Nom du paysage dominant en un point.
@@ -1057,21 +1129,27 @@ impl Generator {
         c: Climate,
         ridge: f32,
     ) -> [f32; 3] {
-        let mut sum = [0.0; 3];
-        let mut total = 0.0;
-        for (_, t, m, col) in BIOMES {
-            let d = (c.temperature - t).powi(2) + (c.moisture - m).powi(2);
-            let w = 1.0 / (d * d + 1e-4);
-            total += w;
-            for i in 0..3 {
-                sum[i] += col[i] * w;
-            }
-        }
-        let mut col = sum.map(|s| s / total);
         let (w, hue, rock) = (&site.w, site.hue, site.rock);
+        // Le sol suit le climat. Sans eau, il est nu : sable clair ou rouge des deserts chauds, cailloux
+        // gris des deserts froids. Puis viennent les herbes seches des steppes, et enfin l'herbe verte,
+        // de plus en plus sombre et dense vers les tropiques humides.
+        let wet = c.aridity();
+        let sand = mix3([0.5, 0.39, 0.24], [0.46, 0.26, 0.13], hue);
+        let bare = mix3([0.33, 0.29, 0.23], sand, smoothstep(4.0, 16.0, c.mean));
+        let straw = mix3([0.3, 0.26, 0.12], [0.36, 0.27, 0.1], hue);
+        let tundra = mix3([0.19, 0.16, 0.095], [0.15, 0.155, 0.075], hue);
+        let mut green = mix3(tundra, [0.1, 0.15, 0.045], smoothstep(7.0, 12.0, c.hot));
+        green = mix3(green, [0.078, 0.14, 0.036], smoothstep(12.0, 18.0, c.mean));
+        green = mix3(green, [0.042, 0.105, 0.028], smoothstep(19.0, 24.0, c.mean));
+        let mut col = mix3(bare, straw, smoothstep(0.05, 0.25, wet));
+        let grown = smoothstep(0.3, 0.7, wet);
+        col = mix3(col, green, grown);
+        // Une longue saison seche jaunit l'herbe : savanes, pays mediterraneens.
+        let parched = (1.0 - smoothstep(8.0, 45.0, c.driest)) * smoothstep(10.0, 18.0, c.mean) * grown;
+        col = mix3(col, straw, parched * 0.45);
 
         // Chaque region a sa teinte : d'un vert emeraude a des herbes d'or.
-        let shift = [lerp(0.66, 1.3, hue), lerp(1.12, 1.03, hue), lerp(0.9, 0.72, hue)];
+        let shift = [lerp(0.84, 1.16, hue), lerp(1.05, 1.0, hue), lerp(0.95, 0.82, hue)];
         for i in 0..3 {
             col[i] *= shift[i];
         }
@@ -1100,30 +1178,37 @@ impl Generator {
         }
 
         // Prairies d'altitude, puis roche : la vegetation monte dans les creux et s'arrete sur les cretes.
-        let cold = 1.0 - smoothstep(0.1, 0.27, c.temperature - ridge.min(0.0) * 0.05);
-        let meadow = smoothstep(0.17, 0.27, c.temperature) * (1.0 - smoothstep(0.27, 0.4, c.temperature));
-        col = mix3(col, [0.13, 0.17, 0.05], meadow * 0.6);
+        // L'etage se lit a la temperature du mois le plus chaud : les arbres s'arretent vers 10 degres,
+        // les pelouses vers 5, et la neige ne fond plus en dessous de 1 a 3 degres selon ce qu'il en tombe.
+        let cold = 1.0 - smoothstep(2.5, 7.0, c.hot - ridge.min(0.0) * 2.0);
+        let meadow = smoothstep(4.0, 7.0, c.hot) * (1.0 - smoothstep(9.0, 12.0, c.hot));
+        col = mix3(col, [0.13, 0.17, 0.05], meadow * 0.6 * smoothstep(0.2, 0.5, wet));
         let bare = (1.0 - smoothstep(0.6, 0.76, normal_y - ridge.max(0.0) * 0.1)).max(cold * 0.85);
         col = mix3(col, rock, bare);
 
         // Neige la ou il fait froid : elle quitte les parois et les cretes soufflees.
-        let snow = smoothstep(0.1, 0.03, c.temperature + ridge.min(0.0) * 0.03) * smoothstep(0.55, 0.78, normal_y);
+        let line = 1.0 + (c.rain / 1200.0).min(2.0);
+        let snow = smoothstep(line + 1.2, line - 0.8, c.hot + ridge.min(0.0) * 1.2) * smoothstep(0.55, 0.78, normal_y);
         mix3(col, [0.84, 0.88, 0.94], snow)
     }
 
     /// Part des emplacements occupes par un arbre, selon le biome, le massif (`woods`, de 0 a 1) et le froid.
-    pub fn tree_cover(&self, biome: Biome, woods: f32, temperature: f32) -> f32 {
+    pub fn tree_cover(&self, c: &Climate, woods: f32) -> f32 {
         // Une vraie foret laisse passer le jour : couvert de 50 a 80 % au coeur des massifs,
         // bois clairs et bosquets sur leurs lisieres (FAO : une foret commence a 10 % de couvert).
-        let cover = match biome {
-            Biome::Jungle => 0.18 + 0.42 * woods,
-            Biome::Forest => 0.04 + 0.42 * woods * woods.sqrt(),
+        // Le couvert suit la pluie : les savanes se ferment en foret au-dela de 1 500 mm (Hirota et al. 2011).
+        let wet = c.aridity();
+        let cover = match self.biome(*c) {
+            Biome::Jungle => 0.2 + 0.42 * woods,
+            Biome::Forest => (0.04 + 0.42 * woods * woods.sqrt()) * smoothstep(0.5, 0.9, wet).max(0.35),
             Biome::Taiga => 0.04 + 0.4 * woods * woods.sqrt(),
-            Biome::Grassland => 0.006 + 0.3 * woods * woods,
-            Biome::Savanna => 0.015 + 0.09 * woods,
-            Biome::Desert | Biome::Tundra => 0.0,
+            Biome::Grassland => (0.003 + 0.2 * woods * woods) * smoothstep(0.25, 0.62, wet),
+            Biome::Savanna => 0.006 + (0.02 + 0.2 * smoothstep(500.0, 1500.0, c.rain)) * woods,
+            Biome::Shrubland => 0.02 + 0.14 * woods,
+            Biome::Desert | Biome::Tundra | Biome::Ice => 0.0,
         };
-        cover * smoothstep(0.14, 0.24, temperature)
+        // Limite des arbres : la ou le mois le plus chaud n'atteint pas 10 degres (Korner).
+        cover * smoothstep(8.5, 11.5, c.hot)
     }
 
     /// Massif forestier en un point : le meme bruit que le placement des arbres.
@@ -1162,13 +1247,6 @@ impl Generator {
         smoothstep(0.12, 0.34, self.groves.fbm(dir * planet_radius() / 2.4e4, 2))
     }
 
-    /// Part d'arbres aux couleurs d'automne, de 0 a 1.
-    pub fn autumn(&self, dir: DVec3, c: Climate) -> f32 {
-        self.provinces.autumn.sample_linear(dir)
-            * smoothstep(0.26, 0.36, c.temperature)
-            * (1.0 - smoothstep(0.58, 0.68, c.temperature))
-    }
-
     /// Fonce le sol sous les forets. Vu de loin, ou les arbres ne sont plus dessines,
     /// le sol prend la couleur de la canopee : la foret reste visible jusqu'a l'horizon.
     /// Rend aussi la part de foret en ce point, dont le shader tire la texture des cimes.
@@ -1201,15 +1279,18 @@ impl Generator {
         // Les massifs sont trop petits pour une grille large : on prend leur moyenne.
         let woods = if spacing < 100.0 { self.woods(dir) } else { 0.5 };
         let open = 1.0 - w.dunes.max(w.badlands) * 0.95;
-        let cover = self.tree_cover(self.biome(c), woods, c.temperature)
+        let cover = self.tree_cover(&c, woods)
             * self.forest_share(dir, ridge)
             * open
             * smoothstep(0.72, 0.82, normal_y)
             * smoothstep(1.5, 5.0, above);
         let far = smoothstep(4.0, 60.0, spacing as f32);
-        let strength = cover * lerp(0.3, 0.92, far);
+        // De tres loin, on ne voit plus le sol entre les arbres : une foret est une nappe sombre.
+        let closed = (cover * 2.4).min(0.94);
+        let strength = lerp(cover * lerp(0.3, 0.92, far), closed, smoothstep(80.0, 2500.0, spacing as f32));
         let green = mix3([0.042, 0.078, 0.024], [0.016, 0.042, 0.022], self.stand(dir));
-        let canopy = mix3(green, [0.19, 0.06, 0.012], self.autumn(dir, c)).map(|v| v * self.canopy_tone(dir));
+        // L'automne et l'hiver des feuillus viennent du shader, selon le moment de l'annee.
+        let canopy = green.map(|v| v * self.canopy_tone(dir));
         (mix3(col, canopy, strength), strength)
     }
 
@@ -1240,8 +1321,10 @@ impl Generator {
         ridge: f32,
     ) -> [f32; 3] {
         let mut col = self.surface_color_at(dir, site, above, normal_y, c, ridge);
-        let plants =
-            smoothstep(0.15, 0.45, c.temperature) * smoothstep(2.0, 6.0, above) * smoothstep(0.7, 0.86, normal_y);
+        let plants = smoothstep(4.0, 11.0, c.hot)
+            * smoothstep(0.2, 0.5, c.aridity())
+            * smoothstep(2.0, 6.0, above)
+            * smoothstep(0.7, 0.86, normal_y);
         if plants > 0.0 {
             let wide = self.tint.fbm(dir * planet_radius() / 1.5e4 + DVec3::splat(11.0), 3) * 1.6;
             let dry = (self.tint.fbm(dir * planet_radius() / 2400.0, 4) * 1.5 + wide + 0.5).clamp(0.0, 1.0);
@@ -1258,7 +1341,7 @@ impl Generator {
 
     /// Part de banquise a la surface de l'ocean, dans [0, 1].
     pub fn sea_ice(&self, c: Climate) -> f32 {
-        smoothstep(0.07, 0.035, c.temperature)
+        smoothstep(-1.0, -3.5, c.mean)
     }
 
     /// Un point de depart au bord d'une riviere, dans un pays tempere : la premiere image doit
@@ -1273,7 +1356,8 @@ impl Generator {
             }
             let middle = self.water.edge_points(edge)[1];
             let climate = self.climate(middle, edge.level[0]);
-            if !(0.34..0.7).contains(&climate.temperature) || climate.moisture < 0.45 {
+            // Un pays tempere et vert : entre 6 et 20 degres de moyenne, sans grand froid, humide.
+            if !(6.0..20.0).contains(&climate.mean) || climate.cold < -8.0 || climate.aridity() < 0.65 {
                 continue;
             }
             if let Some(dir) = self.bank_near(middle) {
@@ -1303,7 +1387,7 @@ impl Generator {
                 continue;
             }
             let climate = self.climate(dir, e);
-            if !(0.36..0.72).contains(&climate.temperature) || climate.moisture < 0.25 {
+            if !(4.0..22.0).contains(&climate.mean) || climate.aridity() < 0.3 {
                 continue;
             }
             let sun = sun_at(dir);
@@ -1365,7 +1449,7 @@ impl Generator {
                 // Un sol de prairie, et presque aucun arbre jusqu'a la rive.
                 let sparse = |p: DVec3, height: f32| {
                     let c = self.climate(p, height);
-                    self.tree_cover(self.biome(c), self.woods(p), c.temperature) < 0.06
+                    self.tree_cover(&c, self.woods(p)) < 0.06
                 };
                 if !sparse(spot, s.height) {
                     continue;
@@ -1533,6 +1617,89 @@ impl Generator {
         image
     }
 
+    /// Carte plate du climat. `mode` : "koppen" (types de climat), "temp" (temperature moyenne) ou "pluie".
+    pub fn climate_map_rgb(&self, w: usize, h: usize, mode: &str) -> Vec<u8> {
+        let mut image = vec![0u8; w * h * 3];
+        for y in 0..h {
+            for x in 0..w {
+                let lat = 90.0 - (y as f64 + 0.5) / h as f64 * 180.0;
+                let lon = (x as f64 + 0.5) / w as f64 * 360.0 - 180.0;
+                let dir = lat_lon_to_dir(lat, lon);
+                let e = self.water.elevation.sample_linear(dir);
+                let c = self.climate(dir, e);
+                let land = e > 0.0;
+                let ramp = |t: f32, stops: &[[f32; 3]]| -> [f32; 3] {
+                    let t = t.clamp(0.0, 1.0) * (stops.len() - 1) as f32;
+                    let k = (t as usize).min(stops.len() - 2);
+                    mix3(stops[k], stops[k + 1], t - k as f32)
+                };
+                let col: [f32; 3] = match mode {
+                    "temp" => ramp(
+                        (c.mean + 30.0) / 60.0,
+                        &[[60.0, 0.0, 120.0], [40.0, 90.0, 220.0], [150.0, 220.0, 240.0], [250.0, 240.0, 150.0], [240.0, 120.0, 40.0], [150.0, 0.0, 20.0]],
+                    ),
+                    "pluie" => ramp(
+                        (c.rain / 3000.0).sqrt(),
+                        &[[235.0, 215.0, 160.0], [200.0, 220.0, 130.0], [90.0, 190.0, 110.0], [40.0, 130.0, 170.0], [30.0, 50.0, 160.0], [60.0, 0.0, 110.0]],
+                    ),
+                    _ if !land => {
+                        if c.mean < -2.0 {
+                            [225.0, 235.0, 245.0]
+                        } else {
+                            [18.0, 40.0, 90.0]
+                        }
+                    }
+                    _ => match c.koppen() {
+                        Koppen::Rainforest => [0.0, 60.0, 255.0],
+                        Koppen::Savanna => [70.0, 170.0, 250.0],
+                        Koppen::Desert => [255.0, 60.0, 40.0],
+                        Koppen::Steppe => [245.0, 165.0, 0.0],
+                        Koppen::Mediterranean => [255.0, 255.0, 0.0],
+                        Koppen::Temperate => [150.0, 230.0, 100.0],
+                        Koppen::Continental => [0.0, 200.0, 220.0],
+                        Koppen::Subarctic => [0.0, 110.0, 110.0],
+                        Koppen::Tundra => [170.0, 170.0, 170.0],
+                        Koppen::Ice => [245.0, 245.0, 250.0],
+                    },
+                };
+                let col = if land || mode == "koppen" { col } else { col.map(|v| v * 0.55 + 30.0) };
+                for k in 0..3 {
+                    image[(y * w + x) * 3 + k] = col[k].clamp(0.0, 255.0) as u8;
+                }
+            }
+        }
+        image
+    }
+
+    /// Bilan du climat des terres : part de chaque type de Koppen, pluie et temperature moyennes
+    /// (terres, puis planete entiere), part de terres.
+    pub fn climate_stats(&self) -> ([f64; 10], [f64; 4], f64) {
+        let (mut shares, mut land_area, mut area) = ([0.0f64; 10], 0.0f64, 0.0f64);
+        let (mut rain_land, mut temp_land, mut rain_all, mut temp_all) = (0.0, 0.0, 0.0, 0.0);
+        let (w, h) = (720, 360);
+        for y in 0..h {
+            let lat = 90.0 - (y as f64 + 0.5) / h as f64 * 180.0;
+            let weight = lat.to_radians().cos();
+            for x in 0..w {
+                let dir = lat_lon_to_dir(lat, (x as f64 + 0.5) / w as f64 * 360.0 - 180.0);
+                let e = self.water.elevation.sample_linear(dir);
+                let c = self.climate(dir, e);
+                area += weight;
+                rain_all += c.rain as f64 * weight;
+                temp_all += c.mean as f64 * weight;
+                if e > 0.0 {
+                    land_area += weight;
+                    rain_land += c.rain as f64 * weight;
+                    temp_land += c.mean as f64 * weight;
+                    let k = Koppen::ALL.iter().position(|k| *k == c.koppen()).unwrap_or(0);
+                    shares[k] += weight;
+                }
+            }
+        }
+        let land = land_area.max(1e-9);
+        (shares.map(|s| s / land), [rain_land / land, temp_land / land, rain_all / area, temp_all / area], land_area / area)
+    }
+
     /// Point de depart sans riviere : a terre, plat, tempere. Retombe sur le meilleur point sec.
     pub fn find_inland_spawn(&self) -> DVec3 {
         let golden = std::f64::consts::PI * (3.0 - 5f64.sqrt());
@@ -1559,8 +1726,8 @@ impl Generator {
             let mut score = 4;
             let c = self.climate(dir, h);
             // Un paysage vert plutot qu'un desert pour commencer.
-            let temperate = (0.3..0.68).contains(&c.temperature);
-            score += temperate as u32 * 2 + (c.moisture >= 0.5) as u32;
+            let temperate = (5.0..19.0).contains(&c.mean) && c.cold > -8.0;
+            score += temperate as u32 * 2 + (c.aridity() >= 0.65) as u32;
             if !temperate {
                 if score > best.0 {
                     best = (score, Some(dir));
@@ -1750,7 +1917,7 @@ mod tests {
             });
             time("meandres", &|p| gen.meander_point(p, &d).x as f32);
             time("lacs", &|p| gen.water.lake_at(p).0);
-            time("rivieres", &|p| gen.water.river_at(p, d.spacing, 1.0).map_or(0.0, |r| r.level));
+            time("rivieres", &|p| gen.water.river_at(p, d.spacing, 1.0, 0.0).map_or(0.0, |r| r.level));
             time("etangs", &|p| gen.ponds.pivot(p * planet_radius() / POND_CELL, POND_RADIUS).map_or(0.0, |v| v.1));
             time("villes", &|p| gen.cities.flatten(p));
             time("collines", &|p| gen.hills.eroded(p * planet_radius() / 420.0, d.hills));
@@ -1889,7 +2056,8 @@ mod tests {
         }
     }
 
-    /// La promesse de cette planete : ou qu'on se pose, il y a quelque chose a regarder.
+    /// Comme sur Terre, de grandes plaines (un tiers a la moitie des terres), mais pas partout : le reste
+    /// a du relief ou de l'eau en vue, et chaque planete a des paysages varies.
     #[test]
     fn almost_no_place_is_dull_and_every_planet_is_varied() {
         for seed in [1, 2, 3, 4] {
@@ -1917,7 +2085,8 @@ mod tests {
                     dull += 1;
                 }
             }
-            assert!(dull * 100 < land * 8, "graine {seed} : {dull} lieux ternes sur {land}");
+            assert!(dull * 100 < land * 55, "graine {seed} : {dull} lieux plats sur {land}");
+            assert!(dull * 100 > land * 5, "graine {seed} : {dull} lieux plats sur {land}");
             assert!(kinds.len() >= 7, "graine {seed} : {kinds:?}");
         }
     }
@@ -1933,12 +2102,14 @@ mod tests {
                 if e > 0.0 {
                     let c = g.climate(dir, e);
                     land += 1;
-                    dry += (c.moisture < 0.3) as i32;
-                    wet += (c.moisture > 0.6) as i32;
+                    // Indice d'aridite de l'UNEP : aride en dessous de 0,2, humide au-dessus de 0,65. Sur
+                    // Terre, environ 20 % et 45 % des terres.
+                    dry += (c.aridity() < 0.2) as i32;
+                    wet += (c.aridity() > 0.65) as i32;
                 }
             }
-            assert!(dry * 12 > land && wet * 12 > land, "graine {seed} : {dry} secs, {wet} humides sur {land}");
-            assert!(dry * 2 < land && wet * 2 < land, "graine {seed} : {dry} secs, {wet} humides sur {land}");
+            assert!(dry * 14 > land && wet * 5 > land, "graine {seed} : {dry} secs, {wet} humides sur {land}");
+            assert!(dry * 2 < land && wet * 4 < land * 3, "graine {seed} : {dry} secs, {wet} humides sur {land}");
         }
     }
 

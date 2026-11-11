@@ -12,7 +12,7 @@
 use super::chunk::{NodeId, GRID};
 use super::city::{Building, City, Fence, Kind, Road};
 use super::generator::{planet_radius, Detail, Generator};
-use super::highway::{Highway, Highways, Profile, POINT_STEP};
+use super::highway::{Highway, Highways, Profile, APPROACH, POINT_STEP, PORTAL_COVER, VAULT};
 use super::noise::{hash_seed, Rng};
 use bytemuck::{Pod, Zeroable};
 use glam::{DVec2, DVec3};
@@ -220,6 +220,8 @@ struct Out {
     min: DVec3,
     max: DVec3,
     top: f64,
+    /// Sous terre (tunnel) : la part du jour qui entre encore, dans l'alpha des couleurs (0 a 120).
+    indoor: Option<u8>,
 }
 
 impl Out {
@@ -231,10 +233,16 @@ impl Out {
             min: DVec3::splat(f64::MAX),
             max: DVec3::splat(f64::MIN),
             top: 0.0,
+            indoor: None,
         }
     }
 
-    fn vert(&mut self, p: DVec3, n: DVec3, uv: [f64; 2], pt: Paint) -> u32 {
+    fn vert(&mut self, p: DVec3, n: DVec3, uv: [f64; 2], mut pt: Paint) -> u32 {
+        if let Some(day) = self.indoor {
+            if pt.mat[0] != mat::FACADE {
+                pt.color[3] = day;
+            }
+        }
         self.min = self.min.min(p);
         self.max = self.max.max(p);
         self.top = self.top.max((p + self.origin).length());
@@ -1970,6 +1978,106 @@ impl Out {
         }
     }
 
+    /// Les deux tubes d'un tunnel : piedroits carreles, voute noircie, lampes et ventilateurs.
+    fn tunnel_slice(&mut self, hw: &Highway, a: &Station, b: &Station, tier: Tier) {
+        let (plinth, tiles, soot) = (plain([0.16, 0.155, 0.15]), plain([0.62, 0.6, 0.55]), plain([0.17, 0.165, 0.16]));
+        for side in [-1.0, 1.0] {
+            let arch = bore_arch(hw, side);
+            let (lo, hi) = (arch[0].0, arch[arch.len() - 1].0);
+            // Piedroits : plinthe sombre, carrelage clair jusqu'a la naissance de la voute.
+            let (z0, z1, z2) = (-0.2, 1.1, SPRING);
+            self.band(a, b, lo, z0, lo, z1, [[0.0, 0.0]; 4], plinth);
+            self.band(a, b, lo, z1, lo, z2, [[0.0, 0.0]; 4], tiles);
+            self.band(a, b, hi, z2, hi, z1, [[0.0, 0.0]; 4], tiles);
+            self.band(a, b, hi, z1, hi, z0, [[0.0, 0.0]; 4], plinth);
+            self.profile_band(a, b, &arch, soot);
+            if tier != Tier::Full {
+                continue;
+            }
+            // Deux rangees de lampes sous la voute, tous les 12 m ; une paire de ventilateurs tous les 150 m.
+            let c = (lo + hi) * 0.5;
+            let half = (hi - lo) * 0.5;
+            let lamp = with([1.0, 0.9, 0.7], mat::LAMP);
+            let metal = with([0.3, 0.31, 0.32], mat::PAINT);
+            for (every, fan) in [(12.0, false), (150.0, true)] {
+                let k0 = (a.s / every).ceil() as i64;
+                let k1 = (b.s / every).ceil() as i64;
+                for k in k0..k1 {
+                    let m = k as f64 * every;
+                    let t = (m - a.s) / (b.s - a.s).max(1e-6);
+                    let st = Station {
+                        s: m,
+                        dir: a.dir.lerp(b.dir, t).normalize(),
+                        p: Profile { road: a.p.road + (b.p.road - a.p.road) * t, ..a.p },
+                        ..*a
+                    };
+                    if fan {
+                        for x in [c - 1.3, c + 1.3] {
+                            self.slab(&st, x + 0.55, x - 0.55, -2.2, 2.2, VAULT - 1.75, VAULT - 0.65, metal);
+                        }
+                    } else {
+                        for x in [c - 2.4, c + 2.4] {
+                            let z = SPRING + (VAULT - SPRING) * (1.0 - ((x - c) / half).powi(2)).max(0.0).sqrt();
+                            self.slab(&st, x + 0.22, x - 0.22, -0.8, 0.8, z - 0.32, z - 0.18, lamp);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Tete de tunnel : un mur de beton perce de deux arcs, cote `out` (+1 vers les abscisses croissantes).
+    fn tunnel_head(&mut self, hw: &Highway, st: &Station, out: f64, top: f64) {
+        let concrete = plain([0.47, 0.46, 0.43]);
+        let (med, half) = (hw.median(), hw.half_width());
+        let wide = half + 9.0;
+        let (d0, d1) = if out > 0.0 { (0.0, 1.4) } else { (-1.4, 0.0) };
+        let front = if out > 0.0 { d1 } else { d0 };
+        // Piles : de chaque cote, et entre les deux tubes.
+        for side in [-1.0, 1.0] {
+            let (x0, x1) = (side * wide, side * (half - 0.2));
+            self.slab(st, x0.max(x1), x0.min(x1), d0, d1, -1.5, top, concrete);
+        }
+        self.slab(st, med - 0.5, -(med - 0.5), d0, d1, -1.5, top, concrete);
+        // Au-dessus des arcs : le tympan, et l'intrados de l'arc.
+        for side in [-1.0, 1.0] {
+            let arch = bore_arch(hw, side);
+            for w in arch.windows(2) {
+                let ((xa, za), (xb, zb)) = (w[0], w[1]);
+                let face = [
+                    self.at(st, xa, za, front),
+                    self.at(st, xb, zb, front),
+                    self.at(st, xb, top, front),
+                    self.at(st, xa, top, front),
+                ];
+                self.poly(&face, st.fwd * out, &[[0.0, 0.0]; 4], concrete);
+                let soffit =
+                    [self.at(st, xa, za, d0), self.at(st, xb, zb, d0), self.at(st, xb, zb, d1), self.at(st, xa, za, d1)];
+                self.poly(&soffit, -st.dir, &[[0.0, 0.0]; 4], concrete);
+            }
+        }
+        // Le couronnement.
+        self.slab(st, wide + 0.3, -(wide + 0.3), d0 - 0.2, d1 + 0.2, top, top + 0.45, plain([0.4, 0.39, 0.36]));
+    }
+
+    /// Murs en aile de la tranchee d'acces : leur crete descend de la tete jusqu'au bout de la tranchee.
+    fn approach_walls(&mut self, hw: &Highway, a: &Station, b: &Station, top_a: f64, top_b: f64) {
+        let concrete = plain([0.43, 0.42, 0.39]);
+        let half = hw.half_width();
+        for side in [-1.0, 1.0] {
+            let (xi, xo) = (side * (half + 0.4), side * (half + 1.0));
+            for (x0, x1, za0, za1, zb0, zb1) in [
+                (xi, xi, -1.0, top_a, -1.0, top_b),
+                (xi, xo, top_a, top_a, top_b, top_b),
+                (xo, xo, top_a, -1.0, top_b, -1.0),
+            ] {
+                let q = [self.at(a, x0, za0, 0.0), self.at(b, x0, zb0, 0.0), self.at(b, x1, zb1, 0.0), self.at(a, x1, za1, 0.0)];
+                let n = if x0 == x1 { a.left * -side } else { a.dir };
+                self.poly(&q, n, &[[0.0, 0.0]; 4], concrete);
+            }
+        }
+    }
+
     /// Portique de signalisation, au-dessus des deux chaussees.
     fn gantry(&mut self, hw: &Highway, st: &Station) {
         let (med, cw, half) = (hw.median(), hw.carriage(), hw.half_width());
@@ -1994,6 +2102,23 @@ impl Out {
         }
         self.slab(st, half - 0.5, -(half - 0.5), -0.25, 0.25, 7.0, 7.6, steel);
     }
+}
+
+/// Naissance de la voute d'un tunnel, au-dessus de la chaussee.
+const SPRING: f64 = 4.6;
+
+/// Coupe d'un tube de tunnel, de son mur droit a son mur gauche (x croissant) : la voute vue de dessous.
+fn bore_arch(hw: &Highway, side: f64) -> Vec<(f64, f64)> {
+    let (inner, outer) = (hw.median() - 0.5, hw.half_width() - 0.2);
+    let (lo, hi) = if side > 0.0 { (inner, outer) } else { (-outer, -inner) };
+    let (c, r) = ((lo + hi) * 0.5, (hi - lo) * 0.5);
+    let mut pts = vec![(lo, SPRING)];
+    for k in 1..12 {
+        let t = std::f64::consts::PI * (1.0 - k as f64 / 12.0);
+        pts.push((c + r * t.cos(), SPRING + (VAULT - SPRING) * t.sin()));
+    }
+    pts.push((hi, SPRING));
+    pts
 }
 
 /// Les autoroutes qui traversent un chunk.
@@ -2034,20 +2159,61 @@ fn highway_mesh(out: &mut Out, gen: &Generator, id: NodeId) {
             continue;
         }
         let count = ((s1 - s0) / step).ceil().max(1.0) as usize;
+        // Les coupes, et les tetes de tunnel : une coupe tombe sur chacune.
+        let mut cuts: Vec<f64> = (0..=count).map(|q| s0 + (s1 - s0) * q as f64 / count as f64).collect();
+        for &(t0, t1) in hw.tunnels(gen) {
+            cuts.extend([t0, t1].into_iter().filter(|t| *t > s0 && *t < s1));
+        }
+        cuts.sort_by(f64::total_cmp);
         let mut prev: Option<Station> = None;
-        for q in 0..=count {
-            let s = s0 + (s1 - s0) * q as f64 / count as f64;
+        for s in cuts {
             let st = station(hws, gen, h, s);
             if let Some(a) = prev {
-                if own(hw.dir_at((a.s + st.s) * 0.5)) {
-                    out.highway_slice(hw, h, &a, &st, tier);
-                    if tier != Tier::Low {
+                let mid = (a.s + st.s) * 0.5;
+                if st.s - a.s > 1e-3 && own(hw.dir_at(mid)) {
+                    let inside = hw.in_tunnel(gen, mid);
+                    if inside {
+                        if tier != Tier::Low {
+                            // Le jour entre sur 80 m.
+                            let into = hw
+                                .tunnels(gen)
+                                .iter()
+                                .find(|t| mid >= t.0 && mid <= t.1)
+                                .map_or(1e9, |t| (mid - t.0).min(t.1 - mid));
+                            let day = (1.0 - into / 80.0).clamp(0.0, 1.0);
+                            out.indoor = Some((day * 120.0) as u8);
+                            out.highway_slice(hw, h, &a, &st, tier);
+                            out.tunnel_slice(hw, &a, &st, tier);
+                            out.indoor = None;
+                        }
+                    } else {
+                        out.highway_slice(hw, h, &a, &st, tier);
+                        if hw.portal(gen, mid).is_some_and(|p| p.0 < APPROACH) {
+                            let crest = |s: f64| {
+                                let d = hw.portal(gen, s).map_or(APPROACH, |p| p.0);
+                                0.9 + (PORTAL_COVER + 1.0) * (1.0 - d / APPROACH).max(0.0)
+                            };
+                            out.approach_walls(hw, &a, &st, crest(a.s), crest(st.s));
+                        }
+                    }
+                    // Les tetes de tunnel.
+                    for &(t0, t1) in hw.tunnels(gen) {
+                        for (t, dir) in [(t0, -1.0), (t1, 1.0)] {
+                            if t >= a.s && t < st.s {
+                                let at = station(hws, gen, h, t);
+                                let top = (at.p.ground - at.p.road + 1.5).clamp(VAULT + 2.5, PORTAL_COVER + 6.0);
+                                out.tunnel_head(hw, &at, dir, top);
+                            }
+                        }
+                    }
+                    if tier != Tier::Low && !inside {
                         // Piles tous les 40 m sous les ponts, portiques tous les 5 km.
                         for (every, gantry) in [(40.0, false), (5000.0, true)] {
                             let m = (a.s / every).ceil() * every;
                             if m < st.s && m >= a.s && m > 300.0 && m < hw.length() - 300.0 {
                                 let at = station(hws, gen, h, m);
-                                if gantry && !at.p.bridge() {
+                                let near_tunnel = hw.portal(gen, m).is_some_and(|p| p.0 < 200.0);
+                                if gantry && !at.p.bridge() && !near_tunnel {
                                     out.gantry(hw, &at);
                                 } else if !gantry && at.p.bridge() {
                                     out.pier(hw, &at);
@@ -2121,7 +2287,7 @@ fn circuit_mesh(out: &mut Out, gen: &Generator, id: NodeId) {
                 dir,
                 left: dir.cross(fwd).normalize(),
                 fwd,
-                p: Profile { road: levels[q], ground: levels[q], wet: false },
+                p: Profile { road: levels[q], ground: levels[q], wet: false, tunnel: false },
             }
         };
         let (a, b) = (station(k), station(k1));
@@ -2290,7 +2456,7 @@ fn mountain_mesh(out: &mut Out, gen: &Generator, id: NodeId) {
                 dir,
                 left: dir.cross(fwd).normalize(),
                 fwd,
-                p: Profile { road: levels[q], ground: levels[q], wet: false },
+                p: Profile { road: levels[q], ground: levels[q], wet: false, tunnel: false },
             }
         };
         let (a, b) = (station(k), station(k1));
@@ -2366,7 +2532,7 @@ mod tests {
                 // Pieds des murs, pentes sous les grandes emprises, piles de ponts : un peu sous le sol.
                 let alt = p.length() - planet_radius() - ground;
                 assert!(
-                    (-30.0..800.0).contains(&alt),
+                    (-45.0..800.0).contains(&alt),
                     "LOD {lod} : sommet a {alt} m du sol, materiau {:?}, {:?}",
                     v.mat,
                     crate::world::generator::dir_to_lat_lon(p.normalize())

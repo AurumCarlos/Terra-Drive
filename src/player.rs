@@ -135,6 +135,15 @@ impl PlayerController {
                 floor = floor.max(deck);
             }
         }
+        // Dans un tunnel, la chaussee porte : le relief est au-dessus de la voute.
+        if let Some(t) = world.cities.highways.tunnel(world, up) {
+            if radius - planet_radius() < t.road + crate::world::highway::VAULT {
+                floor = t.road + 0.1;
+                if let Some((depth, side)) = t.wall(BODY_RADIUS) {
+                    cam.position += t.left * (side * depth);
+                }
+            }
+        }
         let ground = planet_radius() + floor + EYE_HEIGHT;
         if radius <= ground {
             cam.position = up * ground;

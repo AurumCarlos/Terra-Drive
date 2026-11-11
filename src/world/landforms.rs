@@ -271,8 +271,6 @@ pub struct Provinces {
     fields: [CubeField; 8],
     /// Teinte regionale, de 0 a 1.
     pub palette: CubeField,
-    /// Automne des forets, de 0 a 1.
-    pub autumn: CubeField,
 }
 
 impl Provinces {
@@ -306,13 +304,15 @@ impl Provinces {
             let inland = smoothstep(30.0, 160.0, e);
             let warm = smoothstep(0.28, 0.5, t);
             [
-                0.16 + n(0) * 0.38,
-                n(1) * (0.2 + 1.15 * arid.max(tepui * 0.85)) * inland * smoothstep(0.1, 0.3, t),
-                n(2) * smoothstep(0.1, 0.24, m) * (1.0 - smoothstep(0.36, 0.5, m)) * warm * 1.1,
-                n(3) * (1.0 - smoothstep(0.16, 0.3, m)) * warm * (1.0 - smoothstep(500.0, 1100.0, e)) * 1.35,
-                n(4) * smoothstep(0.52, 0.7, t) * smoothstep(0.5, 0.68, m) * 1.05,
-                n(5) * (1.0 - smoothstep(0.26, 0.48, t)) * smoothstep(0.22, 0.42, m) * 1.25,
-                n(6) * smoothstep(0.42, 0.6, t) * smoothstep(0.16, 0.3, m) * (1.0 - smoothstep(0.55, 0.72, m)) * 1.1,
+                // Le paysage ordinaire de la Terre : collines et vallees taillees par l'eau. Les autres sont
+                // des exceptions regionales.
+                0.3 + n(0) * 0.4,
+                n(1) * (0.2 + 1.15 * arid.max(tepui * 0.85)) * inland * smoothstep(0.1, 0.3, t) * 0.8,
+                n(2) * smoothstep(0.1, 0.24, m) * (1.0 - smoothstep(0.36, 0.5, m)) * warm * 0.8,
+                n(3) * (1.0 - smoothstep(0.16, 0.3, m)) * warm * (1.0 - smoothstep(500.0, 1100.0, e)) * 1.1,
+                n(4) * smoothstep(0.52, 0.7, t) * smoothstep(0.5, 0.68, m) * 0.72,
+                n(5) * (1.0 - smoothstep(0.26, 0.48, t)) * smoothstep(0.22, 0.42, m) * 1.0,
+                n(6) * smoothstep(0.42, 0.6, t) * smoothstep(0.16, 0.3, m) * (1.0 - smoothstep(0.55, 0.72, m)) * 0.75,
                 (1.0 - smoothstep(0.16, 0.34, t)) * smoothstep(0.03, 0.22, o) * 1.7,
             ]
         };
@@ -328,9 +328,7 @@ impl Provinces {
         });
         let hue = layer(30);
         let palette = par_cells(grid, &|c| (hue.fbm(grid.center(c) * 5.0, 3) * 1.9 + 0.5).clamp(0.0, 1.0));
-        let leaves = layer(31);
-        let autumn = par_cells(grid, &|c| smoothstep(-0.02, 0.24, leaves.fbm(grid.center(c) * 7.0, 3)));
-        Self { fields, palette: CubeField::from_cells(grid, &palette), autumn: CubeField::from_cells(grid, &autumn) }
+        Self { fields, palette: CubeField::from_cells(grid, &palette) }
     }
 
     /// Poids de chaque type de relief au lieu `dir`, interpoles entre les cellules.
@@ -412,19 +410,22 @@ impl Volcanoes {
             let radius = rng.range(14_000.0, 30_000.0) * if e < -600.0 { 1.5 } else { 1.0 };
             add(&mut list, dir, summit, radius);
         }
-        // Chaines d'iles : un point chaud fixe, une plaque qui derive au-dessus.
-        for _ in 0..14 {
-            let y = rng.range(-0.8, 0.8) as f64;
-            let a = rng.range(0.0, std::f32::consts::TAU) as f64;
-            let r = (1.0 - y * y).sqrt();
-            let mut dir = DVec3::new(a.cos() * r, y, a.sin() * r);
-            let side = dir.any_orthonormal_vector();
-            for k in 0..rng.range(5.0, 11.0) as u32 {
-                if elevation.sample(dir) < -300.0 {
-                    let summit = (2600.0 - k as f32 * 240.0).max(380.0) * rng.range(0.7, 1.15);
-                    add(&mut list, dir, summit, rng.range(26_000.0, 44_000.0));
-                }
-                dir = (dir + side * (rng.range(150_000.0, 260_000.0) as f64 / planet_radius())).normalize();
+        // Chaines d'iles : la trace des points chauds simules sur la plaque qui derive au-dessus. Les volcans
+        // sont hauts sur le panache, puis de plus en plus bas et uses en aval, jusqu'aux monts sous-marins.
+        for c in 0..plates.grid.cells() {
+            let activity = plates.hotspot[c];
+            if activity < 0.06 || rng.f32() >= 0.35 + 0.5 * activity {
+                continue;
+            }
+            let dir = plates.grid.center(c);
+            let e = elevation.sample(dir);
+            let summit = if e < -300.0 {
+                (300.0 + 3400.0 * activity) * rng.range(0.75, 1.15)
+            } else {
+                e.max(0.0) + 2200.0 * activity * rng.range(0.6, 1.1)
+            };
+            if summit > e + 400.0 {
+                add(&mut list, dir, summit, rng.range(26_000.0, 44_000.0));
             }
         }
 
@@ -488,55 +489,6 @@ fn cone(x: f32) -> f32 {
         // Une cuvette, un peu moins haute que le rebord.
         1.0 - 0.1 * smoothstep(RIM, RIM * 0.45, x)
     }
-}
-
-/// Vents dominants : alizes d'est sous 30 degres, vents d'ouest jusqu'a 60, vents polaires au-dela.
-fn wind(dir: DVec3) -> DVec3 {
-    let lat = dir.y.abs().asin().to_degrees();
-    let east = DVec3::Y.cross(dir).normalize_or_zero();
-    let north = dir.cross(east);
-    let toward_equator = -north * dir.y.signum();
-    if lat < 30.0 {
-        -east * 0.9 + toward_equator * 0.4
-    } else if lat < 60.0 {
-        east - toward_equator * 0.3
-    } else {
-        -east * 0.8 + toward_equator * 0.4
-    }
-}
-
-/// L'humidite portee par les vents depuis la mer. Elle se perd en chemin, surtout en franchissant
-/// une chaine : on obtient des cotes pluvieuses, des interieurs secs et des deserts d'abri.
-pub fn moisture_field(plates: &Tectonics) -> CubeField {
-    let grid = plates.grid;
-    let spacing = planet_radius() * std::f64::consts::FRAC_PI_2 / grid.n as f64;
-    let height = |c: usize| plates.orogeny[c].clamp(0.0, 1.4).powf(1.8) * 4200.0;
-    let upstream: Vec<u32> = (0..grid.cells())
-        .map(|c| {
-            let dir = grid.center(c);
-            grid.cell_of((dir - wind(dir).normalize_or_zero() * (spacing * 1.1 / planet_radius())).normalize()) as u32
-        })
-        .collect();
-    let sea: Vec<bool> = plates.crust.iter().map(|c| *c < 0.5).collect();
-    let mut wet: Vec<f32> = sea.iter().map(|s| if *s { 1.0 } else { 0.4 }).collect();
-    let mut around = [0u32; 8];
-    for _ in 0..70 {
-        for c in 0..grid.cells() {
-            if sea[c] {
-                continue;
-            }
-            let u = upstream[c] as usize;
-            let climb = (height(c) - height(u)).max(0.0);
-            let loss = 0.018 + climb * 0.00028;
-            let mut carried = wet[u];
-            // Un peu de diffusion : les fronts de pluie debordent du vent moyen.
-            let count = grid.neighbours(c, &mut around);
-            let side: f32 = around[..count].iter().map(|n| wet[*n as usize]).sum::<f32>() / count.max(1) as f32;
-            carried = carried * 0.8 + side * 0.2;
-            wet[c] = (carried * (1.0 - loss)).clamp(0.0, 1.0);
-        }
-    }
-    CubeField::from_cells(grid, &wet)
 }
 
 #[cfg(test)]

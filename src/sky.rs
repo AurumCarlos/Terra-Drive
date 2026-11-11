@@ -1,6 +1,7 @@
 //! Position du soleil. L'axe des poles est Y ; l'heure locale depend donc de la longitude,
 //! et une moitie de la planete est toujours dans la nuit.
 
+use crate::weather::Weather;
 use glam::{DVec3, Vec3};
 
 pub struct Sky {
@@ -12,11 +13,14 @@ pub struct Sky {
     pub day_length: f32,
     /// Temps ecoule, pour le vent, les vagues et les nuages.
     pub elapsed: f32,
+    /// Saison et temps qu'il fait autour de la camera.
+    pub weather: Weather,
 }
 
 impl Default for Sky {
     fn default() -> Self {
-        Self { sun_longitude: 0.0, declination: 15f32.to_radians(), day_length: 1800.0, elapsed: 0.0 }
+        let weather = Weather::default();
+        Self { sun_longitude: 0.0, declination: weather.declination(), day_length: 1800.0, elapsed: 0.0, weather }
     }
 }
 
@@ -29,7 +33,24 @@ impl Sky {
     pub fn advance(&mut self, dt: f32) {
         self.elapsed += dt;
         if self.day_length > 0.0 {
-            self.shift_time(dt / self.day_length);
+            let days = dt / self.day_length;
+            self.shift_time(days);
+            self.weather.advance(days, days as f64 * 86_400.0);
+        } else {
+            // Soleil fige : les nuages et la pluie passent quand meme, au rythme d'une journee de 30 minutes.
+            self.weather.advance(0.0, dt as f64 * 48.0);
+        }
+        self.declination = self.weather.declination();
+    }
+
+    /// Le meme soleil, sans la meteo : pour chercher une heure sans toucher au ciel.
+    fn probe(&self) -> Sky {
+        Sky {
+            sun_longitude: self.sun_longitude,
+            declination: self.declination,
+            day_length: self.day_length,
+            elapsed: self.elapsed,
+            weather: Weather::default(),
         }
     }
 
@@ -59,7 +80,7 @@ impl Sky {
     /// Sous les latitudes ou il ne s'y trouve jamais, rend la fin d'apres-midi.
     pub fn evening_time(&self, up: DVec3, degrees: f32) -> f32 {
         let target = degrees.to_radians().sin() as f64;
-        let mut probe = Sky { ..*self };
+        let mut probe = self.probe();
         (0..250)
             .map(|k| 0.5 + k as f32 * 0.002)
             .find(|&time| {
@@ -72,7 +93,7 @@ impl Sky {
 
     /// Direction du soleil a l'heure dite du soir, vue du lieu donne.
     pub fn evening_sun(&self, up: DVec3, degrees: f32) -> DVec3 {
-        let mut probe = Sky { ..*self };
+        let mut probe = self.probe();
         probe.set_local_time(up, self.evening_time(up, degrees));
         probe.sun_dir().as_dvec3()
     }

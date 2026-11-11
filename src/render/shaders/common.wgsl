@@ -11,12 +11,58 @@ struct Globals {
     camera_wrap: vec4f, // xyz position de la camera enroulee sur WRAP
     misc: vec4f,        // temps, lod_factor, largeur, hauteur
     camera_km: vec4f,   // xyz position de la camera en km, w = decalage des nuages
+    weather: vec4f,     // moment de l'annee (0 = mi-janvier), precipitations, part de neige, sol mouille
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
 // r : Perlin-Worley, g et b : Worley, a : Perlin fractal. Periodique, avec mips.
 @group(0) @binding(1) var noise3: texture_3d<f32>;
 @group(0) @binding(2) var noise_sampler: sampler;
+// Climat, par direction depuis le centre de la planete : nebulosite, temperature moyenne au niveau de la mer,
+// demi-ecart de l'hiver a l'ete et pluie de l'annee (voir weather::encode_climate).
+@group(0) @binding(3) var weather_map: texture_cube<f32>;
+
+// Temperature de l'air a ce moment de l'annee, en degres, a l'altitude donnee (m).
+fn season_temperature(dir: vec3f, altitude: f32) -> f32 {
+    let w = textureSampleLevel(weather_map, noise_sampler, dir, 0.0);
+    let mean = w.g * 90.0 - 50.0;
+    let half = w.b * 60.0 - 30.0;
+    return mean - half * cos(6.2831853 * g.weather.x) - 0.006 * max(altitude, 0.0);
+}
+
+// Neige au sol : un mois assez froid et assez de precipitations pour la garder. Pres de la camera, une
+// chute de neige en cours blanchit aussi le sol.
+fn snow_cover(dir: vec3f, altitude: f32, dist: f32) -> f32 {
+    let w = textureSampleLevel(weather_map, noise_sampler, dir, 0.0);
+    let t = season_temperature(dir, altitude);
+    let lying = smoothstep(0.5, -3.5, t) * smoothstep(0.015, 0.06, w.a);
+    let falling = g.weather.y * g.weather.z * (1.0 - smoothstep(8000.0, 30000.0, dist));
+    return max(lying, falling * 0.8);
+}
+
+// Vie des feuilles d'un feuillu caduc a ce moment de l'annee : x = sans feuilles, y = couleurs d'automne,
+// z = jeunes feuilles. Rien la ou l'hiver reste doux. `jitter` (-0.5 a 0.5) decale chaque arbre de quelques
+// jours : une foret ne vire pas d'un bloc.
+fn leaf_season(dir: vec3f, altitude: f32, jitter: f32) -> vec3f {
+    let w = textureSampleLevel(weather_map, noise_sampler, dir, 0.0);
+    let cooling = 0.006 * max(altitude, 0.0);
+    let mean = w.g * 90.0 - 50.0 - cooling;
+    let half = w.b * 60.0 - 30.0;
+    let a = 6.2831853 * g.weather.x;
+    let t = mean - half * cos(a) + jitter * 4.0;
+    let deciduous = smoothstep(9.0, 4.0, mean - abs(half));
+    if half * sin(a) < 0.0 {
+        // L'annee se refroidit : les feuilles virent, puis tombent.
+        return vec3f(smoothstep(6.0, 2.0, t), smoothstep(14.0, 8.0, t), 0.0) * deciduous;
+    }
+    let bare = smoothstep(8.0, 5.0, t);
+    return vec3f(bare, 0.0, (1.0 - bare) * smoothstep(14.0, 10.0, t)) * deciduous;
+}
+
+// Sol mouille par la pluie autour de la camera.
+fn wetness(dist: f32) -> f32 {
+    return g.weather.w * (1.0 - smoothstep(15000.0, 45000.0, dist));
+}
 
 const WRAP: f32 = 4096.0;
 
@@ -147,6 +193,12 @@ fn apply_atmosphere(col: vec3f, rel: vec3f, steps: i32) -> vec3f {
     return col * s.transmittance + s.inscatter;
 }
 
+// Couleur du rideau de pluie (voir post.wgsl) : la lumiere diffuse sous un ciel couvert.
+fn rain_haze(up: vec3f) -> vec3f {
+    let day = day_factor(up);
+    return mix(vec3f(0.004, 0.005, 0.008), vec3f(0.30, 0.33, 0.37), day) * mix(1.0, 1.35, g.weather.z);
+}
+
 // Lumiere du soleil a l'altitude h (km), soleil a mu de la verticale.
 // En altitude, le soleil se couche plus tard : les nuages restent eclaires apres le sol.
 fn sun_light_at(h: f32, mu: f32) -> vec3f {
@@ -192,7 +244,16 @@ fn cloud_cover(q: vec3f) -> f32 {
     let a = textureSampleLevel(noise3, noise_sampler, q / 6100.0, 0.0).a;
     let b = textureSampleLevel(noise3, noise_sampler, q / 1450.0, 0.0).a;
     let c = textureSampleLevel(noise3, noise_sampler, q / 340.0, 0.0).a;
-    return smoothstep(0.42, 0.74, a * 0.46 + b * 0.32 + c * 0.22);
+    // Le climat regle le seuil : ciel presque vide sur les deserts, charge sous l'equateur et sur les
+    // routes des perturbations.
+    // Le decalage des nuages fait deriver le motif, pas le climat : on lit celui du lieu survole.
+    let p = q - cloud_offset();
+    let wet = textureSampleLevel(weather_map, noise_sampler, normalize(p), 0.0).r;
+    let low = mix(0.64, 0.34, smoothstep(0.03, 0.7, wet));
+    let cover = smoothstep(low, low + 0.3, a * 0.46 + b * 0.32 + c * 0.22);
+    // Sous la pluie, le ciel se ferme au-dessus de la camera.
+    let near = 1.0 - smoothstep(12.0, 60.0, length(p - g.camera_km.xyz));
+    return max(cover, g.weather.y * near * mix(0.95, 0.75, b));
 }
 
 // Masse du nuage en p : bases plates et sommets arrondis, plus hauts sous les grands bancs.
@@ -280,8 +341,50 @@ fn yaw_rotate(p: vec3f, yaw: f32) -> vec3f {
     return vec3f(c * p.x - s * p.z, p.y, s * p.x + c * p.z);
 }
 
-fn object_position(pos: vec3f, sway: f32, inst_pos: vec3f, scale: f32, yaw: f32) -> vec3f {
-    var p = yaw_rotate(pos, yaw) * scale;
+// Forme propre a chaque arbre, tiree de son cap (aleatoire et fixe) : etirements (xyz), elance ou trapu,
+// houppier ovale, et penchant (w, de -0.5 a 0.5).
+fn object_shape(yaw: f32) -> vec4f {
+    let h = fract(sin(vec4f(yaw * 12.9898, yaw * 78.233, yaw * 37.719, yaw * 59.137) + vec4f(1.0, 2.0, 3.0, 4.0)) * 43758.5453);
+    return vec4f(0.86 + 0.28 * h.x, 0.86 + 0.3 * h.y, 0.86 + 0.28 * h.z, h.w - 0.5);
+}
+
+// Feuillu caduc d'apres l'alpha de sa teinte (voir scatter::TINT_GOLD) : 1 or, 2 melange, 3 rouge ; 0 sinon.
+fn deciduous_code(tint_a: f32) -> f32 {
+    let c = round(tint_a * 255.0) - 249.0;
+    return select(0.0, c, c >= 1.0 && c <= 3.0);
+}
+
+// Decalage de chaque arbre dans le calendrier des feuilles.
+fn leaf_jitter(yaw: f32) -> f32 {
+    return fract(yaw * 3.7) - 0.5;
+}
+
+// Un feuillu qui a perdu ses feuilles : son houppier ne fait plus d'ombre.
+fn leaves_fallen(sway: f32, inst_pos: vec3f, yaw: f32, tint_a: f32) -> bool {
+    if sway < 0.125 || deciduous_code(tint_a) == 0.0 {
+        return false;
+    }
+    let at = inst_pos - g.center.xyz;
+    return leaf_season(normalize(at), length(at) - g.center.w, leaf_jitter(yaw)).x > 0.6;
+}
+
+// `tint_a` : alpha de la teinte de l'instance, 0 pour les herbes.
+fn object_position(pos: vec3f, sway: f32, inst_pos: vec3f, scale: f32, yaw: f32, tint_a: f32) -> vec3f {
+    var q = pos;
+    if tint_a > 0.0 {
+        let s = object_shape(yaw);
+        q *= s.xyz;
+        // Penche un peu, davantage vers la cime.
+        q.x += s.w * 0.08 * q.y * q.y / (q.y + 20.0);
+        // Feuillage bossele, different d'un arbre a l'autre.
+        if sway >= 0.125 {
+            let ph = s.xyz * 40.0;
+            let w = sin(q.x * 0.9 + ph.x) * sin(q.y * 0.7 + ph.y) * sin(q.z * 0.9 + ph.z);
+            let out = vec3f(q.x, 0.0, q.z);
+            q += out / max(length(out), 1.0) * w * 0.6 + vec3f(0.0, w * 0.25, 0.0);
+        }
+    }
+    var p = yaw_rotate(q, yaw) * scale;
     // Vent : la phase depend de la position pour que tout ne bouge pas d'un bloc.
     let t = g.misc.x;
     let phase = dot(inst_pos + g.camera_wrap.xyz, vec3f(0.13, 0.11, 0.17));

@@ -59,6 +59,8 @@ Le bouton "Aller dans l'espace" du menu y va directement.
 - **Aller dans l'espace** et **Retourner a la surface**.
 - **Aller a la ville la plus proche** : arrivee en vol, a 2 km au sud du centre. L'affichage tete haute donne le nom, le plan et la direction de la ville la plus proche.
 - **Carte** de la planete : relief, rivieres et lacs, frontieres de plaques en option. Un clic y envoie le joueur en survol.
+- **Mois**, de 1 a 12 (juillet par defaut) : place l'annee a ce mois. L'affichage tete haute donne le temps
+  qu'il fait (ligne "Temps" : mois, temperature, pluie ou neige, sol mouille ou enneige).
 
 La simulation d'une nouvelle planete prend quelques secondes en arriere-plan : le jeu continue sur l'ancienne en attendant.
 
@@ -90,6 +92,9 @@ Pres du sol, elle est deplacee sur un point de depart de la nouvelle planete.
 
 # Au pied de la route de montagne la plus proche : ici celle de Toranbourg, 13 epingles (planete 3)
 .\cargo.ps1 run --release -- --seed 3 --pos "-53.9113,81.1318" --montagne
+
+# En janvier sous la neige (TERRA_MONTH : 1 a 12 ; TERRA_RAIN : 0 a 1 force les precipitations)
+$env:TERRA_MONTH = "1"; $env:TERRA_RAIN = "0.8"; .\cargo.ps1 run --release -- --seed 3 --pos "55,-95" --altitude 3
 
 # Descente de l'orbite jusqu'au sol, affiche les temps d'image
 .\cargo.ps1 run --release -- --no-vsync --altitude 13000000 --pitch -89 --autopilot 440000
@@ -131,9 +136,9 @@ fn main() {
 | --- | --- |
 | `world/noise.rs` | Bruit de gradient 3D a derivees analytiques, en f64 |
 | `world/cube.rs` | Grilles globales sur le cube-sphere, champs interpoles sans raccord |
-| `world/tectonics.rs` | Simulation des plaques : derive, collisions, subduction, dorsales |
-| `world/landforms.rs` | Filtre d'erosion, provinces de paysage, volcans, vents et humidite |
-| `world/hydrology.rs` | Erosion, drainage, lacs et reseau de rivieres |
+| `world/tectonics.rs` | Simulation des plaques : cycle de Wilson (dechirure de la Pangee, traction des plaques plongeantes, collisions et sutures), subduction, dorsales, points chauds |
+| `world/landforms.rs` | Filtre d'erosion, provinces de paysage, volcans (subductions et points chauds), vents et humidite |
+| `world/hydrology.rs` | Erosion, drainage sur des noeuds irreguliers, lacs et reseau de rivieres |
 | `world/generator.rs` | Fonction (parametres, direction) vers relief, eau, climat, biome, couleur |
 | `world/chunk.rs` | Quadtree sur les 6 faces d'un cube-sphere, maillages (morphing, jupes), surface de l'eau |
 | `world/city.rs` | Villes : emplacement sur la planete, plan des rues (damier, ilots, etoile, vieille ville), ilots, parcelles, batiments, collisions |
@@ -144,7 +149,8 @@ fn main() {
 | `world/scatter.rs` | Placement deterministe de la vegetation et des rochers |
 | `world/streaming.rs` | Selection du LOD, horizon, threads de generation, cache, collisions |
 | `render/mod.rs` | Rendu wgpu : ombres, scene HDR, ocean, nuages, sortie, interface |
-| `render/meshes.rs` | Arbres, herbes et rochers generes par code |
+| `render/meshes.rs` | Arbres (20 especes : tronc, branches, rameaux et paquets de feuilles), herbes et rochers generes par code |
+| `weather.rs` | Saisons (inclinaison du soleil, temperatures du mois), perturbations, pluie, neige, sol mouille, adherence |
 | `render/noise_tex.rs` | Texture de bruit 3D periodique, pour les nuages, le terrain et l'eau |
 | `render/shaders/` | Shaders WGSL, dont `city.wgsl` : facades, fenetres, toits, chaussee, eclairage de nuit, et la voiture dessinee au pixel (joints, poignees, optiques, feux, calandre, plaques, pneus, compteurs) |
 | `vehicle/model.rs` | Voiture generee par code (plus de 20 000 sommets) : carrosserie lissee sur 161 sections, passages de roues, pneus, jantes a 10 branches, disques et etriers, retroviseurs, essuie-glaces, echappements, habitacle (sieges, planche de bord, compteurs, ecran, volant) |
@@ -154,18 +160,19 @@ fn main() {
 | `world/fast_hash.rs` | Table de hachage rapide (FxHash) pour les identifiants de noeuds et de cellules |
 | `ui.rs` | Menu et affichage tete haute, avec egui |
 | `app.rs`, `camera.rs`, `input.rs`, `player.rs`, `sky.rs` | Boucle de jeu, API et controleur |
-| `bin/audit.rs`, `bin/probe.rs`, `tour.ps1` | Controle de la beaute : statistiques, sonde d'un lieu (`probe GRAINE LAT LON`), planches de captures (compiler avant `tour.ps1`) |
+| `bin/audit.rs`, `bin/probe.rs`, `bin/biome_spots.rs`, `bin/ocean_depth.rs`, `bin/tunnels.rs`, `bin/river_spots.rs`, `tour.ps1` | Controle de la beaute : statistiques, sonde d'un lieu (`probe GRAINE LAT LON`), lieu le plus boise de chaque biome et hemisphere (`biome_spots GRAINE`), profondeur des mers et profil depuis le rivage (`ocean_depth GRAINE`), pentes et tunnels des autoroutes (`tunnels GRAINE`), embouchures et confluences des grandes rivieres (`river_spots GRAINE`), planches de captures (compiler avant `tour.ps1`) |
 
 Choix principaux :
 
 - **Une simulation, puis une fonction pure.** Rayon de 6 371 km. La creation calcule une fois les grilles globales ; ensuite, tout se deduit de ces grilles et du bruit, et une meme direction donne toujours le meme resultat.
-- **Tectonique.** De 10 a 19 plaques rigides tournent autour de leur pole d'Euler pendant 48 pas. La croute continentale se heurte et s'epaissit, l'ocean plonge sous les continents, les dorsales creent de la croute neuve. Les chaines de montagnes viennent de ce soulevement.
+- **Tectonique.** Un cycle de Wilson en 48 pas. Les continents partent reunis en une Pangee, qui se dechire le long de grands cercles bruites : chaque moitie part de son cote, avec des epaulements de rift. Les plaques tournent autour de leur pole d'Euler, et ce pole se tourne vers leurs bords qui plongent : c'est la traction de la plaque plongeante, principale force motrice selon Forsyth et Uyeda (1975). Les plaques oceaniques vont donc plus vite que les continents. Deux continents qui se heurtent freinent, s'epaississent en chaines de montagnes, puis se soudent en une seule plaque apres une collision durable (suture, comme l'Inde contre l'Asie). Des points chauds fixes dans le manteau percent les plaques qui passent : chapelets d'iles volcaniques qui s'enfoncent en s'eloignant du point chaud, comme Hawaii. Sur les planetes 1 a 6 : 2 a 7 dechirures, 3 a 5 sutures, 9 a 12 plaques a la fin.
 - **Erosion.** Un modele de puissance fluviale creuse les bassins versants a 39 puis 20 km de resolution.
+- **Mers.** Le fond suit la simulation : 3 600 m en moyenne au large (planete 3). Pres des cotes, la grille globale ne donnerait qu'une pente de quelques metres par kilometre, donc de l'eau a hauteur de cheville sur des kilometres : un avant-cote creuse le fond, plus raide le long des cotes rocheuses. Il y a environ 12 m d'eau a 500 m du rivage, 23 m a 2 km, 56 m a 10 km et 135 m a 30 km, comme le plateau continental terrestre. Les lagunes des plaines cotieres restent peu profondes.
 - **Lacs.** Le remplissage des depressions sur une grille de 13 km donne leur niveau et leur exutoire. Des cuvettes s'ajoutent dans le froid et au pied des chaines. Chaque lac deborde dans une riviere.
-- **Rivieres.** Le cumul des pluies designe les rivieres, qui naissent plus tot en altitude et descendent jusqu'a la mer ou un lac. Le debit fixe leur largeur. Leur trace serpente autour de la grille et un cone de pente taille leur vallee.
+- **Rivieres.** L'ecoulement suit la plus forte pente entre des noeuds decales au hasard autour du centre de chaque case (dans l'esprit de Cordonnier et al. 2016), et non les 8 directions d'une grille : les rivieres ne sont plus rectilignes. Dans les zones plates comblees, l'ordre de remplissage est tire au hasard, ce qui donne des arbres ramifies au lieu de lignes paralleles. Le cumul des pluies designe les rivieres, qui naissent plus tot en altitude et descendent jusqu'a la mer ou un lac. Le seuil est regle sur [HydroRIVERS](https://www.hydrosheds.org/products/hydrorivers) (36 millions de km de rivieres pour les bassins de plus de 10 km2, longueur qui decroit comme la racine du seuil) : environ 4,4 millions de km sur la planete 3. Le debit fixe leur largeur et un cone de pente taille leur vallee. Aux confluences, l'affluent rejoint le cours principal en biais, dans le sens du courant, et non a angle droit au noeud ; les deux lits se fondent en un minimum doux, sans seuil ni mare ronde a la jonction. A l'embouchure, le lit s'evase en estuaire sur les derniers metres d'altitude, son niveau descend jusqu'a celui de la mer et ses berges deviennent des vasieres au lieu de digues ou de falaises.
 - **Sans couture.** Le bruit est evalue en 3D sur la sphere et les grilles sont raccordees le long des aretes du cube.
 - **Erosion sans simulation.** Le filtre de ravines de Rune Skovbo Johansen, adapte a la sphere : des rayures alignees sur la pente, en plusieurs octaves qui se ramifient, dessinent cretes et vallons en chaque point, sans voisins ni passes.
-- **Provinces de paysage.** Chaque region recoit une signature selon son climat : collines, plateaux et canyons a strates, terres ravinees, dunes, tours calcaires, landes a lacs, monolithes, vallees glaciaires et fjords. S'y ajoutent environ 150 volcans, sur les subductions et en chapelets d'iles.
+- **Provinces de paysage.** Chaque region recoit une signature selon son climat : collines, plateaux et canyons a strates, terres ravinees, dunes, tours calcaires, landes a lacs, monolithes, vallees glaciaires et fjords. S'y ajoutent des volcans sur les subductions et au-dessus des points chauds de la simulation des plaques.
 - **Climat par les vents.** L'humidite part des oceans, suit les vents dominants et tombe sur les reliefs : les deserts se forment derriere les chaines.
 - **Relief a toutes les echelles.** Le spectre du relief suit a peu pres celui de la Terre (amplitude proportionnelle a la longueur d'onde) : grandes ondulations de 9 km, collines de 2,4 km, mottes de 420 m, detail de 95 m. Les ondulations et les collines utilisent un bruit amorti par sa propre pente (Inigo Quilez) : fonds de vallee doux, cretes nettes, comme apres l'erosion. Un bruit regional de 70 km fait alterner de rares vraies plaines et des pays bosseles.
 - **Montagnes alpines.** Sur les grandes cretes de 26 km s'ajoutent des aretes et des pics secondaires de 6,5 km, plus marques en altitude (multifractale hybride de Musgrave).
@@ -181,8 +188,13 @@ Choix principaux :
 - **Eau.** Vagues sur quatre echelles, reflets de l'image (montagnes et nuages) puis du ciel calcule, chemin de lumiere du soleil, ecume le long des rives.
 - **Terrain.** Couleur et relief ajoutes au pixel, du caillou au massif : le lointain garde sa texture, et les forets leurs cimes.
 - **Vegetation.** Herbes courbes, hautes herbes a epis qui s'embrasent a contre-jour, sapins dentueles, feuillages ajoures au pixel.
+- **Especes d'arbres.** Vingt especes choisies selon le biome, le climat de Koppen et l'altitude. Coniferes : epiceas et sapins, pins sylvestres (sols secs, hivers rudes), melezes (montagne et grand froid), sequoias geants (cotes tres arrosees et douces), cedres en plateaux (montagnes mediterraneennes), pins parasols et cypres. Feuillus : chenes, hetres (climats oceaniques), erables, bouleaux, oliviers, saules et peupliers d'Italie le long des rivieres, eucalyptus, acacias, baobabs, fromagers geants a contreforts qui percent la canopee tropicale, dragonniers des pays chauds et secs, palmiers. Les maillages ont la taille d'arbres adultes (chene 21 m, epicea 30 m, sequoia 68 m) ; l'age du peuplement les fait varier de 55 a 145 %.
+- **Arbres construits.** Chaque feuillu a un fut evase, des maitresses branches qui vont de la fourche (ou d'une fleche) vers la surface de son houppier, des rameaux secondaires, des brindilles en eventail et des paquets de feuilles au bout des branches, plus sombres en bas et au coeur. Au pixel, trois echelles de bruit decoupent les bords et donnent des grappes claires et des creux sombres. Chaque arbre a sa propre forme, tiree de son cap : elance ou trapu, houppier ovale, penche, feuillage bossele autrement. Palmiers a folioles, rosettes des dragonniers, rideau de rameaux des saules.
+- **Saisons des arbres.** La ou l'hiver est froid, les feuillus suivent la temperature du mois : jeunes feuilles claires au printemps, or (bouleau, saule, peuplier, meleze), orange et brun (chene, hetre) ou rouge (erable) a l'automne, puis branches nues l'hiver, avec un fin reseau de brindilles que la neige coiffe, et plus d'ombre portee par le houppier. Chaque arbre vire a quelques jours d'ecart. Vues de loin, les forets prennent les memes couleurs.
+- **Saisons et meteo.** Une annee de jeu dure 30 jours de jeu par defaut. L'inclinaison du soleil suit la saison (23,44 degres) et chaque lieu passe de ses temperatures de janvier a celles de juillet, a l'oppose dans l'autre hemisphere. Des perturbations de 320 km et des averses de 40 km derivent a 12 m/s ; il pleut ou neige sous elles d'autant plus souvent que le lieu est arrose a ce mois (quelques heures par mois au desert, un jour sur trois sous les tropiques humides). En jeu : traits de pluie ou flocons masques par le relief, rideau gris qui bouche l'horizon, ciel qui se ferme, sol qui fonce en se mouillant puis seche, neige qui tient l'hiver sur les replats, les branches et les herbes, mers et lacs geles avec un peu de retard sur le froid. Les pneus perdent jusqu'a 22 % d'adherence sur le mouille et 55 % sur la neige.
 - **Villes.** Environ 140 villes sur la planete 3, posees sur des terres seches et peu pentues, souvent au bord de l'eau. Quatre plans inspires de villes reelles : damier a avenues larges (Manhattan, plan de 1811), ilots a pans coupes (l'Eixample de Cerda a Barcelone), etoile d'avenues rayonnantes avec un quartier d'affaires au bout de l'axe (Paris et la Defense), vieille ville aux rues organiques (croissance par segments, d'apres Parish et Muller 2001). Les ilots sont decoupes en parcelles, a la maniere de Vanegas et al. 2012. Le bati s'effiloche vers l'exterieur : lobes, echancrures, hameaux et maisons le long des routes de sortie.
 - **Autoroutes.** Les villes voisines sont reliees par un graphe de voisinage relatif (Toussaint 1980), complete pour rejoindre les morceaux isoles. Le trace contourne relief, lacs et villes, passe la mer peu profonde sur de longs ponts, et s'ecarte des autres autoroutes ; les croisements deviennent des passages superieurs. Profil en long lisse, deblais et remblais, viaducs sur piles, glissieres en beton, portiques, 2 ou 3 voies par sens selon la taille des villes.
+- **Tunnels.** Quand une crete depasse de plus de 80 m les rampes a 4 % qu'on pourrait tirer de part et d'autre, l'autoroute passe dessous en ligne droite d'un pied a l'autre. Les tetes sont placees la ou la couverture depasse 12 m : portail en beton a deux voutes, murs en aile dans la tranchee d'acces. Dedans : deux tubes carreles, voute noircie, lampes tous les 12 m et ventilateurs ; le jour s'eteint sur les 80 premiers metres, la pluie s'arrete, la voiture, le joueur et la camera restent sous la voute. Sur les 60 premieres autoroutes de la planete 3 : 298 tunnels (405 km), et les pentes de plus de 10 % passent de 460 a 128 km. `tunnels GRAINE` donne ces chiffres et des points de vue.
 - **Carrefours.** Une rue qui debouche en biais s'arrete le long du bord de la chaussee croisee, sans triangle de terre entre les deux ; un test verifie qu'il y a de l'asphalte de part et d'autre de chaque bout de rue.
 - **Rues reliees.** Le plan de chaque ville est verifie : toutes ses rues forment un seul reseau (les contacts sont calcules geometriquement), et chaque bout d'autoroute arrive sur une rue. Une rue isolee est rattachee par le plus court chemin parmi les rues ecartees, ou retiree avec son ilot. `planet_stats` controle tous les plans d'une planete.
 - **Physique de la voiture.** Dans l'esprit des simulateurs comme BeamNG, rien n'est anime : tout sort du calcul. La caisse est un corps rigide en 3D (1 550 kg, inertie en tangage, lacet et roulis) porte par quatre suspensions independantes : ressort d'environ 1,5 Hz, amortisseur plus ferme en detente qu'en compression, butee de fin de course, barres antiroulis. La charge de chaque pneu est la force de sa suspension, donc la plongee au freinage, le cabrage, le roulis en virage, les roues qui decollent, les sauts et les retombees viennent d'eux-memes. Les pneus suivent la formule magique de Pacejka sur le glissement combine, avec une longueur de relaxation : le pneu se deforme avant de glisser, ce qui tient aussi la voiture en pente a l'arret. Le sol est un plan sonde sous chaque roue (relief, rues, ponts, autoroutes, circuits, eau), avec son adherence et sa resistance au roulement. Si la caisse touche le sol (tonneau, gros saut), sa tole frotte et rebondit ; R remet la voiture sur ses roues. Les chocs contre les batiments et les arbres sont des impulsions au point d'impact (un choc sur un coin fait pivoter la voiture) et laissent des bosses dans la carrosserie. Moteur de 470 Nm, boite automatique a 7 rapports, differentiel a glissement limite, ABS, antipatinage, frein a main, trainee et appui. Integration a 240 Hz. Mesures des tests : 0 a 100 km/h en 4,9 s, freinage de 100 a 0 en 35 m au plus, environ 1,2 g en virage (pneus tres adherents), une oscillation puis le repos apres une chute.
@@ -241,6 +253,14 @@ Mesures (planete 3, Ryzen 5 9600X, RX 9070 XT, sans vsync) :
 - Les objets ne sont dessines que dans les cascades d'ombre qu'ils touchent ; la cascade lointaine utilise la geometrie du niveau de detail parent ; l'eau ne calcule le ciel que si le reflet ecran manque.
 - Les instances d'arbres et d'herbes (plus de 100 000 par image) se preparent sur plusieurs threads et partent directement dans le tampon du GPU ; les tables de chunks utilisent FxHash.
 
+Mesures apres la nouvelle tectonique, les nouvelles rivieres et la meteo (`gen_bench 3`, meme machine) :
+creation de la planete 8,5 s (eau et climat 3,4 s, villes 4,3 s dont routes de montagne 2,1 s),
+chunk moyen 19,8 ms sur 130 chunks (de 15 a 24 ms). En jeu, la pluie fait passer de 136 a 98 images par
+seconde environ, la neige a 88 : les traits et les flocons sont dessines en plein ecran.
+Survol d'une foret de feuillus a 40 m/s (1080p, sans vsync, avec les nouveaux arbres) : image mediane 7,7 ms,
+99e centile 22,5 ms ; GPU 2,9 ms dont ombres 0,55 et scene 1,5 ; preparation des instances 2,6 ms sur le processeur.
+Un arbre proche compte de 600 a 3 300 triangles, sa version lointaine moins de 90, la plus legere moins de 45.
+
 ## Tests
 
 ```powershell
@@ -252,24 +272,27 @@ Mesures (planete 3, Ryzen 5 9600X, RX 9070 XT, sans vsync) :
 - Les voitures garees et les lampadaires sont de simples volumes ; seule la voiture conduite est detaillee.
 - Les phares ne projettent pas de lumiere sur la route. Les vitres sont opaques de l'exterieur.
 - La voiture n'est pas deformable comme dans BeamNG (pas de poutres ni de noeuds) : la caisse reste rigide, seules des bosses s'affichent, et les degats ne changent pas la conduite. Pas d'usure ni d'echauffement des pneus. La direction au clavier est progressive mais moins fine qu'un volant. Il n'y a pas de circulation.
-- Routes de montagne : en cul-de-sac (pas de route de col qui redescende de l'autre cote) ; pas de tunnels ni de ponts, donc une route s'arrete avant une falaise ou une riviere, et une route qui en croiserait une autre est abandonnee. Les reliefs de la planete restent moderes : de 150 a 1 000 m de denivele. Le calcul ajoute environ 1,7 s a la creation de la planete.
+- Routes de montagne : en cul-de-sac (pas de route de col qui redescende de l'autre cote) ; pas de tunnels ni de ponts, donc une route s'arrete avant une falaise ou une riviere, et une route qui en croiserait une autre est abandonnee. Les reliefs de la planete restent moderes : de 150 a 1 000 m de denivele. Le calcul ajoute environ 2,1 s a la creation de la planete.
 - Circuits : pas d'adversaires ni de chronometre. La route d'acces est une ligne droite. Une ville sans terrain plat libre autour d'elle n'a pas de circuit, et un meme trace peut revenir. Le detail des facades s'efface avec la distance.
 - Les rampes des ponts peuvent faire une marche aux carrefours, et les batiments s'enfoncent un peu sur les pentes.
 - Les autoroutes partent du bord des villes, dans le prolongement d'une avenue : pas d'echangeurs ni de bretelles.
   Deux autoroutes qui se croisent passent l'une au-dessus de l'autre, sans se raccorder.
-- Les iles et continents separes par une mer profonde (plus de 70 m) restent sans liaison : il peut y avoir plusieurs reseaux.
+- Les iles et continents separes par une mer profonde (plus de 100 m) restent sans liaison : il peut y avoir plusieurs reseaux.
 - Avec des autoroutes, une planete se genere plus lentement : environ 10 s pour 140 villes, 18 s pour 400.
 - Les panneaux d'autoroute n'ont pas de texte. Certains hameaux de faubourg n'ont pas de rue d'acces.
 - Pas de circulation ni d'habitants. Vue de loin la nuit, la ville parait un peu pale.
 - Une rue qui s'avance sur l'eau est retiree, mais quelques passerelles restent dans les lagunes.
 - Pas de grottes ni de surplombs : le terrain est un champ de hauteur. Les falaises des canyons et des tours sont des pentes tres raides.
 - Les ravines restent une illusion locale : elles ne rejoignent pas toujours les rivieres simulees.
-- Pas de cascades ni de deltas : un fort denivele donne des rapides, et les rivieres arrivent a la mer par un seul lit.
+- Pas de cascades ni de deltas : un fort denivele donne des rapides, et les rivieres arrivent a la mer par un seul lit (evase en estuaire). Vus de haut, les meandres restent un peu anguleux a l'echelle de 3 km.
+- Tunnels : le trace des autoroutes ne les prevoit pas (il contourne toujours le relief comme avant), ils sont seulement creuses la ou le trace franchit une crete. Il reste des rampes raides par endroits (128 km a plus de 10 % sur 17 500 km), et la tranchee pres d'une tete est grossiere vue de tres loin.
 - Tous les lacs debordent : pas de lacs sales sans exutoire dans les deserts.
-- Le reseau de rivieres s'arrete aux bassins d'environ 300 a 800 km2 : plus petit, il n'y a pas de ruisseau, seulement des vallons secs.
-- Pas d'audio, de PNJ, de sauvegarde ni de chargement de modeles 3D.
+- Le reseau de rivieres s'arrete aux bassins d'environ 550 (en montagne) a 1 500 km2 : plus petit, il n'y a pas de ruisseau, seulement des vallons secs.
+- Les lacs couvrent 0,4 % des terres, contre environ 3 % sur Terre. Le climat mediterraneen reste rare (0,7 % des terres), donc ses especes aussi.
+- Saisons : la neige au sol suit le climat du mois, pas les chutes passees. Vue de loin, la part de feuillus d'une foret est estimee (environ la moitie), pas tiree des arbres places. La pluie n'est masquee que par la profondeur de l'image (pas d'abri sous un pont vu de loin), et le rideau de pluie a l'horizon reste leger.
+- Pas de PNJ, de sauvegarde ni de chargement de modeles 3D.
 - Un jeu ne peut pas encore ajouter ses propres objets a la scene.
 - La physique se limite au sol, aux troncs et aux rochers. Il n'y a pas de gravite orbitale : le vol est libre.
 - Les nuages n'ont pas de filtrage temporel : ils gardent un leger grain de pres.
 - Le reflet ne montre que ce qui est a l'ecran ; le reste vient du ciel calcule, sans nuages.
-- Les arbres proches restent des volumes simples habilles au pixel, sans vraies feuilles.
+- Les feuilles sont dessinees au pixel sur des volumes, pas une a une : de tres pres, un houppier reste un peu massif. Au-dela de 900 m, un arbre n'est plus qu'une silhouette sans tronc.

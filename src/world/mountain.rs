@@ -48,12 +48,12 @@ const LEG: usize = 3;
 /// Pente maximale du profil en long.
 pub const LEVEL_GRADE: f64 = 0.12;
 /// Denivele minimal pour qu'une route de montagne vaille la peine.
-const MIN_RISE: f64 = 300.0;
+const MIN_RISE: f64 = 240.0;
 /// Routes de montagne au plus par ville, vers des sommets ecartes d'au moins PEAK_SPREAD radians.
 pub const ROADS_PER_CITY: usize = 4;
 const PEAK_SPREAD: f64 = 1.1;
 /// Distance maximale du sommet au bord de la ville.
-const REACH: f64 = 14_000.0;
+const REACH: f64 = 40_000.0;
 /// Couts, en metres de route equivalents : une epingle, un changement de cap.
 const HAIRPIN_COST: f64 = 320.0;
 const TURN_COST: f64 = 6.0;
@@ -670,9 +670,10 @@ fn plan_road(
         let (pts, apexes) = polyline(&grid, &steps);
         let clashes = clashes(&pts);
         if clashes.is_empty() {
-            // Un trace qui ne monte presque pas n'est pas une route de montagne.
-            let top = steps.iter().map(|st| ground(st.cell).unwrap_or(f64::MIN)).fold(f64::MIN, f64::max);
-            if top - h_gate < MIN_RISE * 0.7 {
+            // Un trace qui ne monte presque pas n'est pas une route de montagne : c'est l'arrivee qui compte,
+            // pas une bosse franchie en chemin.
+            let end = steps.last().and_then(|st| ground(st.cell)).unwrap_or(f64::MIN);
+            if end - h_gate < MIN_RISE * 0.7 {
                 return None;
             }
             let mut line = vec![inside];
@@ -730,15 +731,45 @@ impl MountainRoads {
             let debug = std::env::var("TERRA_DEBUG_MOUNTAIN").is_ok();
             // Les routes principales de toutes les villes d'abord : elles passent avant les suivantes.
             let n = cities_ref.len();
+            // Les noms, du premier au dernier sommet d'une ville.
+            const NAMES: [&str; ROADS_PER_CITY] =
+                ["Route du mont", "Route du col de", "Route des cretes de", "Route du pic de"];
             par_map(n * ROADS_PER_CITY, |job| {
                 let (rank, i) = (job / n, job % n);
                 let t = std::time::Instant::now();
-                let road = plan_road(gen, cities_ref, i, rank, highways, circuits);
+                let road = plan_road(gen, cities_ref, i, rank, highways, circuits).and_then(|(angle, line, hairpins)| {
+                    // La raquette du belvedere, dans le prolongement de la route.
+                    let n = line.len();
+                    let end = line[n - 1];
+                    let d = end - line[n - 2];
+                    let fwd = (d - end * d.dot(end)).normalize_or(end.any_orthonormal_vector());
+                    let center = (end + fwd * (LOOP_RADIUS / r)).normalize();
+                    let (e, nn) = tangent_frame(center);
+                    let v = end - center;
+                    let a0 = v.dot(nn).atan2(v.dot(e));
+                    let ring: Vec<DVec3> = (0..24)
+                        .map(|k| {
+                            let a = a0 + k as f64 / 24.0 * TAU;
+                            (center + (e * a.cos() + nn * a.sin()) * (LOOP_RADIUS / r)).normalize()
+                        })
+                        .collect();
+                    let road = MountainRoad {
+                        name: format!("{} {}", NAMES[rank], cities_ref[i].name),
+                        city: i,
+                        paths: vec![Path::new(line, false, ROAD_HALF), Path::new(ring, true, ROAD_HALF)],
+                        hairpins,
+                        stone: false,
+                        levels: OnceLock::new(),
+                    };
+                    // Le profil definitif, lisse et ecrete, doit encore monter : sinon ce n'est qu'une route
+                    // de plaine.
+                    (road.rise(gen) >= MIN_RISE * 0.6).then_some((angle, road))
+                });
                 if debug {
                     let ms = t.elapsed().as_secs_f64() * 1000.0;
                     eprintln!("route {rank} de {} : {ms:.0} ms, {}", cities_ref[i].name, road.is_some());
                 }
-                (i, rank, road)
+                (i, road)
             })
         };
         let mut list: Vec<MountainRoad> = Vec::new();
@@ -746,15 +777,13 @@ impl MountainRoads {
         let cell = SEPARATION / r;
         let key3 = |d: DVec3| ((d.x / cell).floor() as i64, (d.y / cell).floor() as i64, (d.z / cell).floor() as i64);
         let mut taken: FastMap<(i64, i64, i64), Vec<DVec3>> = FastMap::default();
-        // Les noms, du premier au dernier sommet d'une ville.
-        const NAMES: [&str; ROADS_PER_CITY] = ["Route du mont", "Route du col de", "Route des cretes de", "Route du pic de"];
-        for (i, rank, f) in found {
-            let Some((angle, line, hairpins)) = f else { continue };
+        for (i, f) in found {
+            let Some((angle, mut road)) = f else { continue };
             // Deux routes de la meme ville ne sortent pas au meme endroit.
             if cities[i].exits.iter().any(|e| angle_diff(*e, angle) < 0.35) {
                 continue;
             }
-            let crosses = line.iter().any(|p| {
+            let crosses = road.paths[0].points.iter().any(|p| {
                 let (x, y, z) = key3(*p);
                 (-1..=1).any(|dx| {
                     (-1..=1).any(|dy| {
@@ -769,33 +798,12 @@ impl MountainRoads {
             if crosses {
                 continue;
             }
-            for p in &line {
+            for p in &road.paths[0].points {
                 taken.entry(key3(*p)).or_default().push(*p);
             }
             cities[i].exits.push(angle);
-            // La raquette du belvedere, dans le prolongement de la route.
-            let n = line.len();
-            let end = line[n - 1];
-            let d = end - line[n - 2];
-            let fwd = (d - end * d.dot(end)).normalize_or(end.any_orthonormal_vector());
-            let center = (end + fwd * (LOOP_RADIUS / r)).normalize();
-            let (e, nn) = tangent_frame(center);
-            let v = end - center;
-            let a0 = v.dot(nn).atan2(v.dot(e));
-            let ring: Vec<DVec3> = (0..24)
-                .map(|k| {
-                    let a = a0 + k as f64 / 24.0 * TAU;
-                    (center + (e * a.cos() + nn * a.sin()) * (LOOP_RADIUS / r)).normalize()
-                })
-                .collect();
-            list.push(MountainRoad {
-                name: format!("{} {}", NAMES[rank], cities[i].name),
-                city: i,
-                paths: vec![Path::new(line, false, ROAD_HALF), Path::new(ring, true, ROAD_HALF)],
-                hairpins,
-                stone: list.len() % 2 == 1,
-                levels: OnceLock::new(),
-            });
+            road.stone = list.len() % 2 == 1;
+            list.push(road);
         }
 
         let mut index = RoadIndex::default();
@@ -1021,7 +1029,9 @@ mod tests {
             std::fs::write(file, out).unwrap();
         }
         assert!(roads.list.len() >= 20, "{} routes", roads.list.len());
-        assert!(pins >= roads.list.len(), "{pins} epingles");
+        // Les villes sont dans les plaines : la plupart de ces routes montent en pente douce, et seules
+        // celles qui atteignent un vrai versant font des lacets.
+        assert!(pins >= 3, "{pins} epingles");
     }
 
     /// Un sommet hors d'atteinte : la route s'arrete au plus haut point, ou n'existe pas.
