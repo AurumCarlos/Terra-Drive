@@ -35,8 +35,6 @@ const MIN_LAKE_DEPTH: f32 = 9.0;
 /// Au-dela, la cuvette est comblee par les sediments : on evite les mers interieures a plat.
 const MAX_LAKE_CELLS: usize = 160;
 
-/// Valeur du masque de lac sur le rivage.
-pub const SHORE: f32 = 0.3;
 /// Ecart maximal du trace des rivieres par les meandres, en metres.
 const MAX_WARP: f64 = 4_500.0;
 
@@ -69,6 +67,8 @@ pub struct Lake {
     pub level: f32,
     pub cells: u32,
     pub max_depth: f32,
+    /// Direction de la case la plus profonde, toujours en eau.
+    pub center: DVec3,
     /// Direction de la cellule d'ou sort l'exutoire.
     pub outlet: DVec3,
     /// Troncon de la riviere qui s'en echappe.
@@ -101,9 +101,10 @@ pub struct RiverSample {
 pub struct Hydrology {
     /// Relief a grande echelle, en metres.
     pub elevation: CubeField,
-    lake_mask: CubeField,
-    /// Masque multiplie par le niveau : leur rapport donne un niveau exact dans chaque lac,
-    /// et continu entre deux lacs voisins.
+    /// Hauteur d'eau de chaque case, en metres : dans un lac, la profondeur de la cuvette moins les
+    /// sediments qui l'ont en partie comblee ; autour, negative. Interpolee, elle dessine le rivage.
+    lake_shape: CubeField,
+    /// Niveau du lac le plus proche, sur le lac et deux cases autour : exact partout ou l'eau peut etre.
     lake_level: CubeField,
     /// Largeur du lac de chaque cellule de la grille fine et de ses voisines, en km (0 : aucun lac).
     lake_span: Vec<u16>,
@@ -481,19 +482,23 @@ impl Hydrology {
         let (lake_of, lakes_found) =
             find_lakes(fine, &h3, &flow, &|c| {
                 // Hors des pays rabotes par les glaces, une cuvette est presque toujours comblee ou videe
-                // par sa riviere : seule une sur quatre garde un lac.
+                // par sa riviere : seule une sur deux environ garde un lac.
                 let dir = fine.center(c);
                 let climate = climate_at(dir, h3[c]);
                 let glaciated = climate.mean < 4.0 && climate.hot > -2.0;
                 let wet = climate.aridity();
-                (glaciated && wet > 0.35) || (wet > 0.65 && chance.fbm(dir * 8.0, 3) > 0.12)
+                // Au coeur des chaines, la grille ignore les cretes que le relief fin y dresse : un lac de
+                // 13 km y serait taille a l'emporte-piece dans la montagne. Les lacs de montagne sont
+                // les petits lacs poses par le relief fin, dans les fonds plats.
+                let mountains = orogeny.sample(dir) > 0.45;
+                !mountains && ((glaciated && wet > 0.3) || (wet > 0.55 && chance.fbm(dir * 8.0, 3) > -0.1))
             });
         step("lacs");
 
         // Une fois les lacs connus, les autres cuvettes sont comblees de sediments.
         let surface: Vec<f32> =
             (0..fine.cells()).map(|c| if lake_of[c] == NONE { flow.filled[c] } else { h3[c] }).collect();
-        let mask: Vec<f32> = lake_of.iter().map(|l| (*l != NONE) as u8 as f32).collect();
+        let (shape, levels, spans) = lake_fields(fine, params.seed, &h3, &lake_of, &lakes_found);
 
         let rain3 = {
             let filled = &flow.filled;
@@ -511,29 +516,11 @@ impl Hydrology {
         let (index_grid, index_start, index_edges) = build_index(&edges);
         step("index");
 
-        let weighted: Vec<f32> =
-            lake_of.iter().map(|l| if *l == NONE { 0.0 } else { lakes_found[*l as usize].level }).collect();
-
-        // Largeur de chaque lac, pour ne pas le dessiner sur un maillage plus large que lui.
-        let cell_km = (planet_radius() * std::f64::consts::FRAC_PI_2 / FINAL_N as f64 * 0.001) as f32;
-        let mut lake_span = vec![0u16; fine.cells()];
-        let mut ring = [0u32; 8];
-        for (c, l) in lake_of.iter().enumerate() {
-            if *l != NONE {
-                let span = ((lakes_found[*l as usize].cells.len() as f32).sqrt() * cell_km).clamp(1.0, 60_000.0) as u16;
-                lake_span[c] = lake_span[c].max(span);
-                let count = fine.neighbours(c, &mut ring);
-                for n in &ring[..count] {
-                    lake_span[*n as usize] = lake_span[*n as usize].max(span);
-                }
-            }
-        }
-
         let water = Self {
             elevation: CubeField::from_cells(fine, &surface),
-            lake_mask: CubeField::from_cells(fine, &mask),
-            lake_level: CubeField::from_cells(fine, &weighted),
-            lake_span,
+            lake_shape: CubeField::from_cells(fine, &shape),
+            lake_level: CubeField::from_cells(fine, &levels),
+            lake_span: spans,
             edges,
             lakes,
             index_grid,
@@ -543,14 +530,18 @@ impl Hydrology {
         (water, weather)
     }
 
-    /// Lac en un point : (masque, niveau). Le masque vaut 0 loin de tout lac.
+    /// Lac en un point, s'il y en a un a moins d'une case de la grille : la hauteur d'eau qu'il y aurait,
+    /// en metres (negative hors de l'eau : la profondeur sous la plaine de sediments qui l'entoure), et
+    /// le niveau du lac. Le rivage est la ou la hauteur d'eau s'annule.
     #[inline]
-    pub fn lake_at(&self, dir: DVec3) -> (f32, f32) {
-        let m = self.lake_mask.sample(dir);
-        if m < 0.015 {
-            return (0.0, 0.0);
-        }
-        (m, self.lake_level.sample(dir) / m)
+    pub fn lake_at(&self, dir: DVec3) -> Option<(f32, f32)> {
+        let [shape, level] = CubeField::sample_linear_many([&self.lake_shape, &self.lake_level], dir);
+        (shape > -LAKE_REACH).then_some((shape, level))
+    }
+
+    /// Vrai si le point est dans un lac (sans les festons du rivage dessines par le generateur).
+    pub fn is_lake(&self, dir: DVec3) -> bool {
+        self.lake_at(dir).is_some_and(|(depth, _)| depth > 0.0)
     }
 
     /// Largeur, en metres, du lac qui borde le lieu `dir` (0 s'il n'y en a pas).
@@ -714,6 +705,79 @@ struct FoundLake {
     level: f32,
     cells: Vec<u32>,
     max_depth: f32,
+    /// La case la plus profonde : le coeur du lac, la ou arrivent et d'ou partent les rivieres.
+    deepest: u32,
+}
+
+/// Au-dela de cette hauteur sous le niveau d'un lac (hors de l'eau), plus rien n'en depend, en metres.
+pub const LAKE_REACH: f32 = 60.0;
+/// Hauteur d'eau des cases loin de tout lac.
+const NO_LAKE: f32 = -1000.0;
+/// Part maximale de la cuvette comblee par les sediments.
+const MAX_SEDIMENT: f32 = 0.7;
+
+/// Les champs qui dessinent les lacs : hauteur d'eau de chaque case, niveau du lac le plus proche, et
+/// largeur du lac. Un lac ne garde de l'eau que dans le plus profond de sa cuvette : le reste est comble
+/// de sediments, en plaine plate a son niveau, comme la plupart des lacs de la Terre. Les tailles varient
+/// donc d'un lac a l'autre, au lieu d'epouser chacun les cases de la grille.
+fn lake_fields(grid: CubeGrid, seed: u64, h: &[f32], lake_of: &[u32], found: &[FoundLake]) -> (Vec<f32>, Vec<f32>, Vec<u16>) {
+    let sediment: Vec<f32> = found
+        .iter()
+        .map(|lake| {
+            let u = Rng(hash_seed(seed, 0x1A4E, lake.deepest as i64)).f32();
+            lake.max_depth * MAX_SEDIMENT * u * u * u
+        })
+        .collect();
+    let cells = grid.cells();
+    let mut shape = vec![NO_LAKE; cells];
+    let mut level = vec![0.0f32; cells];
+    let mut owner = vec![NONE; cells];
+    let mut frontier = Vec::new();
+    for (c, &l) in lake_of.iter().enumerate() {
+        if l != NONE {
+            let lake = &found[l as usize];
+            shape[c] = lake.level - h[c] - sediment[l as usize];
+            level[c] = lake.level;
+            owner[c] = l;
+            frontier.push(c as u32);
+        }
+    }
+    // Deux anneaux autour : la hauteur au-dessus du niveau compte comme une hauteur d'eau negative, et le
+    // niveau y est connu, pour que l'interpolation ne melange jamais un lac avec le vide.
+    let mut ring = [0u32; 8];
+    for _ in 0..2 {
+        let mut next = Vec::new();
+        for &c in &frontier {
+            let l = owner[c as usize] as usize;
+            let count = grid.neighbours(c as usize, &mut ring);
+            for &n in &ring[..count] {
+                let k = n as usize;
+                if owner[k] == NONE {
+                    owner[k] = l as u32;
+                    level[k] = found[l].level;
+                    shape[k] = (found[l].level - h[k]).min(-1.0);
+                    next.push(n);
+                }
+            }
+        }
+        frontier = next;
+    }
+    // Largeur de chaque lac, pour ne pas le dessiner sur un maillage plus large que lui : la part en eau
+    // de chacune de ses cases.
+    let cell_km = (planet_radius() * std::f64::consts::FRAC_PI_2 / grid.n as f64 * 0.001) as f32;
+    let mut wet = vec![0.0f32; found.len()];
+    for (c, &l) in lake_of.iter().enumerate() {
+        if l != NONE && shape[c] > 0.0 {
+            wet[l as usize] += (shape[c] / (shape[c] + sediment[l as usize] + 5.0)).clamp(0.05, 1.0);
+        }
+    }
+    let mut spans = vec![0u16; cells];
+    for (c, &l) in owner.iter().enumerate() {
+        if l != NONE {
+            spans[c] = (wet[l as usize].sqrt() * cell_km + 0.5).clamp(1.0, 60_000.0) as u16;
+        }
+    }
+    (shape, level, spans)
 }
 
 /// Les cuvettes assez profondes deviennent des lacs, la ou `keeps_water` dit que le climat les remplit :
@@ -737,11 +801,15 @@ fn find_lakes(
         let level = flow.filled[s];
         let mut cells = Vec::new();
         let mut max_depth = 0.0f32;
+        let mut deepest = start;
         stack.push(start);
         visited[s] = true;
         while let Some(c) = stack.pop() {
             cells.push(c);
-            max_depth = max_depth.max(level - h[c as usize]);
+            if level - h[c as usize] > max_depth {
+                max_depth = level - h[c as usize];
+                deepest = c;
+            }
             let count = grid.neighbours(c as usize, &mut around);
             for &n in &around[..count] {
                 let k = n as usize;
@@ -755,7 +823,7 @@ fn find_lakes(
             for &c in &cells {
                 lake_of[c as usize] = lakes.len() as u32;
             }
-            lakes.push(FoundLake { level, cells, max_depth });
+            lakes.push(FoundLake { level, cells, max_depth, deepest });
         }
     }
     (lake_of, lakes)
@@ -866,7 +934,12 @@ fn build_rivers(
         let (zc, zr) = (level_of(c), level_of(r));
 
         let up = main_up[c];
-        let (start, z0, w0) = if up != NONE && lake_of[c] == NONE {
+        // L'exutoire d'un lac part de son coeur : sous l'eau, le lit ne se voit pas, et il traverse la
+        // plaine de sediments jusqu'a l'eau, ou qu'elle soit dans la cuvette.
+        let lake_heart = |l: u32| grid.center(found[l as usize].deepest as usize);
+        let (start, z0, w0) = if lake_of[c] != NONE {
+            (lake_heart(lake_of[c]), zc, half_width(area[c]))
+        } else if up != NONE {
             let u = up as usize;
             let pu = pos(u);
             ((pu + pc) * 0.5, (level_of(u) + zc) * 0.5, half_width((area[u] + area[c]) * 0.5))
@@ -876,8 +949,11 @@ fn build_rivers(
 
         let joins_lake = lake_of[r] != NONE;
         let mut bend = pc;
-        let (end, z1, w1) = if is_sea(r) || joins_lake {
-            (pr, zr, half_width(area[c]) * if is_sea(r) { 1.5 } else { 1.0 })
+        let (end, z1, w1) = if joins_lake {
+            // Une riviere qui entre dans un lac va jusqu'a son coeur : elle finit dans l'eau.
+            (lake_heart(lake_of[r]), zr, half_width(area[c]))
+        } else if is_sea(r) {
+            (pr, zr, half_width(area[c]) * 1.5)
         } else if main_up[r] == c as u32 {
             ((pc + pr) * 0.5, (zc + zr) * 0.5, half_width((area[c] + area[r]) * 0.5))
         } else {
@@ -939,6 +1015,7 @@ fn build_rivers(
                 level: lake.level,
                 cells: lake.cells.len() as u32,
                 max_depth: lake.max_depth,
+                center: grid.center(lake.deepest as usize),
                 outlet: grid.center(outlet),
                 outflow: edge_of[outlet],
             }
@@ -1125,13 +1202,39 @@ mod tests {
         let g = planet();
         let (mut checked, mut under) = (0, 0);
         for lake in g.water.lakes.iter().step_by(13) {
-            let s = g.surface(lake.outlet);
+            // Lacs et rivieres sont dessines dans l'espace tordu par les meandres.
+            let s = g.surface(g.unbend(lake.center));
             checked += 1;
-            if s.fresh && (s.water_level - lake.level).abs() < 200.0 && s.height < s.water_level {
+            if s.fresh && (s.water_level - lake.level).abs() < 0.01 && s.height < s.water_level - 1.0 {
                 under += 1;
             }
         }
-        assert!(under * 2 > checked, "{under} cellules de sortie en eau sur {checked}");
+        // Le coeur d'un lac est toujours en eau, sauf ou un ilot du relief fin perce.
+        assert!(under * 10 > checked * 9, "{under} coeurs de lac en eau sur {checked}");
+    }
+
+    /// Une riviere qui traverse un lac disparait sous l'eau : pas de berges qui le coupent en morceaux.
+    #[test]
+    fn rivers_do_not_cut_through_lakes() {
+        let g = planet();
+        let (mut open, mut total) = (0, 0);
+        for lake in g.water.lakes.iter().step_by(7).take(150) {
+            // Autour du coeur, sur 1 km : de l'eau partout.
+            let side = lake.center.any_orthonormal_vector();
+            let other = lake.center.cross(side);
+            for k in 0..16 {
+                let a = k as f64 / 16.0 * std::f64::consts::TAU;
+                let dir = (lake.center + (side * a.cos() + other * a.sin()) * (1000.0 / planet_radius())).normalize();
+                if !g.water.is_lake(dir) {
+                    continue;
+                }
+                let s = g.surface(g.unbend(dir));
+                total += 1;
+                open += (s.fresh && s.height < s.water_level - 0.5) as usize;
+            }
+        }
+        assert!(total > 500, "{total} points dans les lacs");
+        assert!(open * 100 > total * 97, "{open} points en eau sur {total}");
     }
 
     /// Les hauts reliefs de la planete doivent suivre l'orogenese simulee, pas un bruit.

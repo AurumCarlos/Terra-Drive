@@ -45,7 +45,7 @@ fn main() -> terra::Result<()> {
             let e = gen.water.elevation.sample_linear(dir);
             if e > 0.0 {
                 land_h.push(e);
-                lakes += (gen.water.lake_at(dir).0 > 0.3) as usize;
+                lakes += gen.water.is_lake(dir) as usize;
             } else {
                 sea_h.push(e);
             }

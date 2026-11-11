@@ -1663,11 +1663,15 @@ impl Renderer {
                 timestamp_writes: ts(2, true, true),
                 occlusion_query_set: None,
             });
-            pass.set_pipeline(&self.clouds_march_pipeline);
-            pass.set_bind_group(0, &self.globals_group, &[]);
-            pass.set_bind_group(1, &self.empty_group, &[]);
-            pass.set_bind_group(2, &self.targets.depth_group, &[]);
-            pass.draw(0..3, 0..1);
+            // Pour les captures du sol : TERRA_NO_CLOUDS retire les nuages (transparence 1 partout).
+            static NO_CLOUDS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            if !*NO_CLOUDS.get_or_init(|| std::env::var_os("TERRA_NO_CLOUDS").is_some()) {
+                pass.set_pipeline(&self.clouds_march_pipeline);
+                pass.set_bind_group(0, &self.globals_group, &[]);
+                pass.set_bind_group(1, &self.empty_group, &[]);
+                pass.set_bind_group(2, &self.targets.depth_group, &[]);
+                pass.draw(0..3, 0..1);
+            }
         }
 
         // L'eau reflete la scene et les nuages : on les compose dans une copie.

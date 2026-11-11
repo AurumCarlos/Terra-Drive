@@ -5,7 +5,7 @@ use super::city::Cities;
 pub use super::climate::{Climate, Koppen};
 use super::climate::ClimateMap;
 use super::cube::CubeField;
-use super::hydrology::{Hydrology, MAX_WIDEN, SHORE};
+use super::hydrology::{Hydrology, LAKE_REACH, MAX_WIDEN};
 use super::landforms::{terrace, Cells, Province, Provinces, Volcanoes};
 use super::noise::{hash_seed, Noise};
 use super::tectonics::{self, Boundary, Tectonics};
@@ -229,6 +229,8 @@ const SLOPE_CACHE_SIZE: usize = 8192;
 type SlopeNode = ((u64, i64, i64, i64), Vec3);
 
 thread_local! {
+    /// Petits lacs deja examines sur ce thread : (planete et centre, niveau ou NaN si refuse).
+    static POND_CACHE: std::cell::RefCell<Vec<(u64, f32)>> = std::cell::RefCell::new(vec![(u64::MAX, 0.0); 2048]);
     /// Noeuds de la grille de pente deja calcules sur ce thread.
     static SLOPE_CACHE: std::cell::RefCell<Vec<SlopeNode>> =
         std::cell::RefCell::new(vec![((u64::MAX, 0, 0, 0), Vec3::ZERO); SLOPE_CACHE_SIZE]);
@@ -252,7 +254,7 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Periode des plus grandes ravines, en metres.
 const GULLY_PERIOD: f64 = 6000.0;
-/// Rayon d'un etang, en mailles de `POND_CELL`.
+/// Rayon de la zone d'un petit lac, en mailles de `POND_CELL`.
 const POND_RADIUS: f32 = 0.25;
 const POND_CELL: f64 = 2600.0;
 
@@ -820,22 +822,27 @@ impl Generator {
             h += tower * smoothstep(0.2, 0.6, karst);
         }
 
-        // Monolithes dans la plaine, chaos de granite dans les landes.
+        // Les reliefs isoles sont poses dans des mailles : sans deformation, ce seraient des cercles parfaits,
+        // et une paroi raide tout autour dessinerait un anneau vu d'avion. Le contour est donc tordu par un
+        // bruit a l'echelle du relief, qui l'allonge et l'echancre.
         let plainsman = w.inselberg * plain;
         if plainsman > 0.01 {
-            // De grands monolithes, et une foule de buttes de granite a leur pied.
-            // Une paroi de roche nue, puis un dome : les memes mailles, donc les memes rochers, pour les deux profils.
-            // Les mailles sont en 3D et la surface n'en coupe qu'une tranche : il faut des rochers larges pour qu'ils affleurent.
-            let (cell, small_cell) = (q / 8000.0, q / 2600.0 + DVec3::splat(19.0));
-            let great = self.towers.towers(cell, 0.75, 0.44, 0.12, 200.0, 330.0)
-                + self.towers.towers(cell, 0.75, 0.44, 0.95, 90.0, 190.0);
-            let small = self.towers.towers(small_cell, 0.45, 0.4, 0.15, 20.0, 70.0)
-                + self.towers.towers(small_cell, 0.45, 0.4, 0.95, 10.0, 50.0);
+            // Des domes de granite isoles (bornhardts, comme Uluru ou le Pain de Sucre) : des flancs raides puis un
+            // sommet arrondi, et des chaos de boules a leur pied (kopjes). Les memes mailles pour les deux
+            // profils, donc les memes rochers. Les mailles sont en 3D et la surface n'en coupe qu'une tranche.
+            let bend = self.warp_at(p * 9.0) * 1500.0;
+            let cell = (q + bend) / 9000.0;
+            let great = self.towers.towers(cell, 0.3, 0.3, 0.22, 110.0, 170.0)
+                + self.towers.towers(cell, 0.3, 0.3, 1.0, 60.0, 160.0);
+            let small_cell = (q + bend * 0.3 + self.warp_at(p * 30.0) * 350.0) / 2600.0 + DVec3::splat(19.0);
+            let small = self.towers.towers(small_cell, 0.3, 0.34, 0.5, 10.0, 30.0)
+                + self.towers.towers(small_cell, 0.3, 0.34, 1.0, 8.0, 30.0);
             h += (great + small) * smoothstep(0.04, 0.3, plainsman);
         }
         let open_land = plain * (1.0 - w.dunes) * (1.0 - w.karst) * (1.0 - w.inselberg);
         if open_land > 0.01 {
-            let knoll = self.towers.towers(q / 7000.0 + DVec3::splat(43.0), 0.16, 0.45, 0.95, 50.0, 190.0);
+            let bend = self.warp_at(p * 8.0 + DVec3::splat(5.0e4)) * 2200.0;
+            let knoll = self.towers.towers((q + bend) / 7000.0 + DVec3::splat(43.0), 0.16, 0.45, 1.0, 40.0, 150.0);
             h += knoll * open_land;
         }
         let moor = (w.moor + w.hills * 0.15 + w.inselberg * 0.3) * plain;
@@ -844,13 +851,20 @@ impl Generator {
                 * smoothstep(0.05, 0.4, moor);
         }
 
-        // Aiguilles marines le long des cotes rocheuses.
-        if (-90.0..12.0).contains(&base) {
-            let coast = 1.0 - smoothstep(-2.0, 12.0, base);
-            h += self.towers.towers((p + DVec3::splat(13.0)) / 620.0, 0.3, 0.42, 0.4, 28.0, 80.0)
-                * smoothstep(-90.0, -30.0, base)
-                * coast
-                * smoothstep(0.45, 0.75, self.provinces.palette.sample_linear(dir));
+        // Aiguilles marines : quelques rochers de quelques dizaines de metres au pied des cotes rocheuses, dans
+        // les premieres centaines de metres d'eau, la ou le fond est encore a moins de 12 m. Plus etroits que
+        // le maillage lointain, ils n'apparaissent que de pres.
+        if (-12.0..2.0).contains(&h) && d.spacing < 40.0 {
+            let rocky = smoothstep(0.45, 0.75, self.provinces.palette.sample_linear(dir));
+            let near = smoothstep(-12.0, -5.0, h) * (1.0 - smoothstep(-0.5, 2.0, h));
+            if rocky * near > 0.0 {
+                let bend = self.warp_at(p * 300.0) * 22.0;
+                let stack = self.towers.towers((p + bend + DVec3::splat(13.0)) / 150.0, 0.25, 0.3, 0.3, 14.0, 34.0);
+                if stack > 0.0 {
+                    let rough = 0.75 + 0.5 * self.hills.value(p / 18.0);
+                    h += stack * rough * rocky * near * (1.0 - smoothstep(15.0, 40.0, d.spacing as f32));
+                }
+            }
         }
 
         // Le detail de pres : mottes et rochers, moins presents sur les sols de sable.
@@ -886,52 +900,107 @@ impl Generator {
         let bent = self.meander_point(dir, d);
         let mut smooth = urban;
 
-        // Etangs : le relief s'y creuse autour d'un niveau fixe, ni le maillage ni la position n'y changent rien.
-        // Un etang plus petit que la maille n'est pas dessine : un seul sommet tombe dedans le changerait
-        // en lac large comme la maille, visible depuis l'orbite.
+        // Lacs. Chacun se decrit par la hauteur d'eau qu'il y aurait en chaque point, en metres, negative hors
+        // de l'eau : le rivage est la ou elle s'annule. Sous l'eau, le sol descend ; autour, une berge monte
+        // doucement depuis le niveau et ne laisse jamais l'eau s'echapper ; sur le rivage meme, le sol est au
+        // niveau, et le relief reste continu. Seule la hauteur d'eau differe d'un lac a l'autre.
+        // Sous l'eau d'un lac, de 0 a 1 : les rivieres s'y effacent.
+        let mut under_lake = 0.0f32;
+        let lakeside = |h: f32, water: f32, level: f32, reach: f32, fade: f32| -> f32 {
+            let target = if water >= 0.0 {
+                // La rive plonge un peu plus vite que la cuvette : un lac a de la profondeur, meme petit.
+                level - water - 2.0 * smoothstep(0.0, 3.0, water)
+            } else {
+                level + 0.6 * smoothstep(0.0, 1.0, -water) - 0.6 * water
+            };
+            let held = if water >= 0.0 { h.min(target) } else { lerp(h, h.max(target), fade * (1.0 - smoothstep(reach * 0.5, reach, -water))) };
+            lerp(held, target, 1.0 - smoothstep(0.0, 1.5, water.abs()))
+        };
+
+        // Petits lacs des landes, des pays rabotes par les glaces et des fonds de vallee de montagne (lacs de
+        // kettle, tarns) : seulement sur un sol plat et dans un climat humide, de tailles variees, aux contours
+        // tordus. Leur niveau ne depend que de leur centre : ni le maillage ni la position n'y changent rien.
+        // Un lac plus petit que la maille n'est pas dessine : un seul sommet tombe dedans le changerait en lac
+        // large comme la maille, visible depuis l'orbite.
         if d.spacing < 320.0 {
-            let cells = p / POND_CELL;
-            if let Some((center, t, roll)) = self.ponds.pivot(cells, POND_RADIUS) {
+            let bend = self.warp_at(p * 45.0) * 240.0 + self.warp_at(p * 160.0 + DVec3::splat(7.0e3)) * 75.0;
+            if let Some((center, t, roll)) = self.ponds.pivot((p + bend) / POND_CELL, POND_RADIUS) {
                 let at = center.normalize();
                 let w_at = self.provinces.at(at);
                 let share = (w_at.moor * 0.95 + w_at.glacial * 0.6 + w_at.hills * 0.14 + w_at.karst * 0.2)
                     * (1.0 - smoothstep(0.1, 0.4, self.orogeny.sample_linear(at)) * 0.5);
-                if roll < share && self.cities.flatten(at) <= 0.0 {
-                    let level = self.pond_level(at, &w_at);
-                    if level > 3.0 {
-                        let target =
-                            if t < 0.3 { level + (0.3 - t) * 34.0 } else { level - smoothstep(0.3, 0.55, t) * 14.0 };
-                        let blend = smoothstep(0.0, 0.26, t);
-                        h = lerp(h, target, blend);
-                        smooth = blend;
-                        if t > 0.2 {
-                            out.water_level = level;
-                            out.fresh = true;
-                            out.bank = 1.0 - smoothstep(0.0, 0.12, (t - 0.3).abs());
-                        }
+                // Le niveau, la pente et le climat ne dependent que du centre : examines une fois par thread.
+                let key = self.id.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                    ^ (center.x * 4.0).round().to_bits().rotate_left(7)
+                    ^ (center.y * 4.0).round().to_bits().rotate_left(29)
+                    ^ (center.z * 4.0).round().to_bits().rotate_left(47);
+                let slot = (key ^ (key >> 29)) as usize & 2047;
+                let level = POND_CACHE.with(|cache| {
+                    let mut cache = cache.borrow_mut();
+                    if cache[slot].0 == key {
+                        return cache[slot].1;
                     }
+                    let level = if roll < share && self.cities.flatten(at) <= 0.0 {
+                        let level = self.pond_level(at, &w_at) - 0.5;
+                        let flat = self.gully_slope(at, &Detail::for_spacing(800.0), &w_at).length() < 0.025;
+                        if level > 3.0 && flat && self.climate(at, level).aridity() > 0.5 { level } else { f32::NAN }
+                    } else {
+                        f32::NAN
+                    };
+                    cache[slot] = (key, level);
+                    level
+                });
+                if !level.is_nan() {
+                    // De 30 a 75 % du rayon, et de 7 a 12 m de fond. Au bord de la maille, la berge
+                    // rejoint le relief.
+                    let size = 0.3 + 0.45 * (roll * 13.7).fract();
+                    let depth = 3.0 + 12.0 * size;
+                    let water = (1.0 - (1.0 - t) / size) * depth;
+                    let edge = smoothstep(0.0, 0.25, t);
+                    h = lerp(h, lakeside(h, water, level, depth * 1.5, 1.0), edge);
+                    let cover = smoothstep(-4.0, 0.0, water) * edge;
+                    smooth = smooth.max(cover);
+                    under_lake = smoothstep(-1.0, 1.5, water) * edge;
+                    if water > 0.0 && (d.spacing as f32) < POND_RADIUS * POND_CELL as f32 * size * 0.5 {
+                        out.water_level = level;
+                        out.fresh = true;
+                    }
+                    out.bank = 1.0 - smoothstep(0.0, 2.0, water.abs());
                 }
             }
         }
 
-        // Lacs : le relief prend la forme d'une cuvette autour du niveau calcule par la simulation.
-        let (mask, lake_level) = self.water.lake_at(bent);
-        if mask > 0.0 && (d.spacing as f32) < self.water.lake_span(bent).max(13_000.0) * 0.7 {
-            let floor = (lake_level - h).clamp(18.0, 130.0);
-            let target = if mask < SHORE {
-                lake_level + (SHORE - mask) / SHORE * 30.0
-            } else {
-                // La rive descend vite : un lac a de la profondeur, meme petit.
-                lake_level - smoothstep(0.0, 0.12, mask - SHORE) * floor
-            };
-            let w = smoothstep(0.015, 0.12, mask);
-            h = lerp(h, target, w);
-            smooth = smooth.max(w);
-            if mask > 0.12 {
-                out.water_level = lake_level;
-                out.fresh = true;
+        // Grands lacs de la simulation. Le rivage suit la cuvette, tordu a l'echelle du kilometre pour
+        // dessiner baies et presqu'iles, et festonne de pres.
+        if let Some((_, level)) = self.water.lake_at(bent) {
+            // Les festons a la mesure du lac : un petit lac ne doit pas glisser hors de sa cuvette.
+            let span = self.water.lake_span(bent);
+            let scale = (span as f64 / 30_000.0).clamp(0.15, 1.0);
+            let warped = (bent * planet_radius()
+                + (self.warp_at(p * 7.0) * 1700.0
+                    + self.warp_at(p * 14.0 + DVec3::splat(1.5e4)) * 900.0
+                    + self.warp_at(p * 30.0 + DVec3::splat(3.0e4)) * 420.0)
+                    * scale)
+                .normalize();
+            if let Some((shape, _)) = self.water.lake_at(warped) {
+                let water = shape + self.warp[1].fbm(p / 650.0, 2) * 1.8;
+                // Trop petit pour le maillage : le sol reste au niveau, peint de la couleur de l'eau.
+                let drawn = (d.spacing as f32) < span.max(1500.0) * 0.35;
+                let fill = if drawn { water } else { water.min(0.0) };
+                h = lakeside(h, fill, level, LAKE_REACH, 1.0);
+                let cover = smoothstep(-6.0, 0.0, water);
+                smooth = smooth.max(cover);
+                under_lake = under_lake.max(smoothstep(-1.0, 1.5, water));
+                if water > 0.0 {
+                    if drawn {
+                        out.water_level = level;
+                        out.fresh = true;
+                    } else {
+                        out.paint = smoothstep(0.0, 2.0, water);
+                    }
+                }
+                out.bank = out.bank.max(1.0 - smoothstep(0.0, 2.5, water.abs()));
             }
-            out.bank = out.bank.max(1.0 - smoothstep(0.0, 0.14, (mask - SHORE).abs()));
         }
 
         // Rivieres : un cone de pente autour du lit taille les versants, quelle que soit leur hauteur.
@@ -957,7 +1026,17 @@ impl Generator {
                 river.wet &= river.level > SEA_LEVEL + 0.25;
                 mudflat = river.valley * estuary;
             }
-            out.paint = river.paint;
+            // Sous un lac, la riviere disparait : ni lit, ni berges qui le couperaient en morceaux.
+            if under_lake > 0.0 {
+                let open = 1.0 - under_lake;
+                river.reach *= open;
+                river.lift *= open;
+                river.valley *= open;
+                river.paint *= open;
+                river.bank *= open;
+                river.wet &= under_lake < 0.5;
+            }
+            out.paint = out.paint.max(river.paint);
             out.bank = out.bank.max(river.bank);
             out.valley = river.valley;
             if river.reach > 0.0 {
@@ -1373,7 +1452,7 @@ impl Generator {
         const CANDIDATES: usize = 6000;
         const STEP: f64 = 2000.0;
         let golden = std::f64::consts::PI * (3.0 - 5f64.sqrt());
-        let is_water = |d: DVec3| self.water.elevation.sample(d) <= 0.0 || self.water.lake_at(d).0 > 0.5;
+        let is_water = |d: DVec3| self.water.elevation.sample(d) <= 0.0 || self.water.is_lake(d);
         let along = |o: DVec3, a: DVec3, m: f64| (o + a * (m / planet_radius())).normalize();
 
         // Un premier tri sur les grilles globales, tres peu couteuses.
@@ -1545,7 +1624,7 @@ impl Generator {
                         let lon = ((x as f64 + 0.5) / w as f64 - 0.5) * 360.0;
                         let dir = lat_lon_to_dir(lat, lon);
                         let e = elevation.sample(dir);
-                        let (mask, _) = self.water.lake_at(dir);
+                        let lake = self.water.is_lake(dir);
                         let lit = if e > 0.0 {
                             // Eclairage venu du nord-ouest : les chaines ressortent.
                             let d = 0.6 / w as f64 * std::f64::consts::TAU;
@@ -1554,7 +1633,7 @@ impl Generator {
                         } else {
                             1.0
                         };
-                        let c = if mask > SHORE { [46.0, 110.0, 190.0] } else { map_color(e).map(|v| v * lit) };
+                        let c = if lake { [46.0, 110.0, 190.0] } else { map_color(e).map(|v| v * lit) };
                         for (p, v) in px.iter_mut().zip(c) {
                             *p = v.clamp(0.0, 255.0) as u8;
                         }
@@ -1916,7 +1995,7 @@ mod tests {
                     .offset
             });
             time("meandres", &|p| gen.meander_point(p, &d).x as f32);
-            time("lacs", &|p| gen.water.lake_at(p).0);
+            time("lacs", &|p| gen.water.lake_at(p).map_or(0.0, |l| l.0));
             time("rivieres", &|p| gen.water.river_at(p, d.spacing, 1.0, 0.0).map_or(0.0, |r| r.level));
             time("etangs", &|p| gen.ponds.pivot(p * planet_radius() / POND_CELL, POND_RADIUS).map_or(0.0, |v| v.1));
             time("villes", &|p| gen.cities.flatten(p));
