@@ -1,265 +1,265 @@
 # Terra
 
-Moteur 3D en Rust qui genere des planetes entieres de la taille de la Terre, avec une demo : marcher,
-voler, monter jusque dans l'espace, redescendre sans chargement, et creer une nouvelle planete depuis un menu.
+A 3D engine in Rust that generates entire Earth-sized planets, with a demo: walk, fly, climb all the way
+into space, come back down without a loading screen, and create a new planet from a menu.
 
-## Lancer
+## Running
 
 ```powershell
 .\cargo.ps1 run --release
 ```
 
-`cargo.ps1` ajoute Rust et MinGW au PATH et compile dans `%LOCALAPPDATA%\terra-target`.
-Il attend Rust (toolchain `stable-x86_64-pc-windows-gnu`) et WinLibs MinGW, installe via winget.
+`cargo.ps1` adds Rust and MinGW to the PATH and builds into `%LOCALAPPDATA%\terra-target`.
+It expects Rust (toolchain `stable-x86_64-pc-windows-gnu`) and WinLibs MinGW, installed via winget.
 
-## Commandes
+## Controls
 
-Les touches sont physiques : ce sont bien ZQSD sur un clavier AZERTY.
+Keys are physical positions on a QWERTY keyboard: on AZERTY, W A S D is Z Q S D and M is the comma key.
 
-| Touche | Action |
+| Key | Action |
 | --- | --- |
-| Clic gauche | Capturer la souris |
-| Echap | Ouvrir / fermer le menu |
-| Z Q S D | Se deplacer |
-| F | Basculer marche / vol |
-| Molette, Page haut / bas | Regler la vitesse de vol, de 2 m/s a 30 000 km/s |
-| Maj | Courir (vitesse x8 en vol) |
-| Espace | Sauter, ou monter en vol |
-| Ctrl | Descendre en vol |
-| T / G | Avancer / reculer l'heure |
-| F12 | Capture d'ecran PNG |
-| M | Couper / remettre le son |
-| E | Prendre une voiture (la sienne si elle est a moins de 12 m, sinon une neuve garee dans la rue ou sur l'autoroute la plus proche) ; en descendre a l'arret |
+| Left click | Capture the mouse |
+| Escape | Open / close the menu |
+| W A S D | Move |
+| F | Toggle walking / flying |
+| Mouse wheel, Page Up / Down | Set flying speed, from 2 m/s to 30,000 km/s |
+| Shift | Run (x8 speed when flying) |
+| Space | Jump, or go up when flying |
+| Ctrl | Go down when flying |
+| T / G | Move time forward / backward |
+| F12 | PNG screenshot |
+| M | Mute / unmute sound |
+| E | Get in a car (your own if it is within 12 m, otherwise a new one parked in the nearest street or highway); get out when stopped |
 
-Au volant :
+While driving:
 
-| Touche | Action |
+| Key | Action |
 | --- | --- |
-| Z / S | Accelerer / freiner, puis reculer |
-| Q / D | Braquer |
-| Espace | Frein a main (fait deraper) |
-| C | Vue de poursuite ou vue du conducteur |
-| L | Phares |
-| R | Remettre la voiture sur ses roues (a l'arret) |
-| Souris | Regarder autour |
+| W / S | Accelerate / brake, then reverse |
+| A / D | Steer |
+| Space | Handbrake (makes the car drift) |
+| C | Chase view or driver view |
+| L | Headlights |
+| R | Put the car back on its wheels (when stopped) |
+| Mouse | Look around |
 
-Un compteur en bas a droite donne la vitesse, le regime et le rapport.
+A gauge in the bottom right shows speed, RPM and gear.
 
-Pour aller dans l'espace : F, quelques crans de molette, regarder vers le ciel et avancer.
-Le bouton "Aller dans l'espace" du menu y va directement.
+To go to space: F, a few notches of the mouse wheel, look at the sky and move forward.
+The "Go to space" button in the menu takes you there directly.
 
 ## Menu
 
-- **Nouvelle planete aleatoire**, ou **Generer avec cette graine** : la graine peut etre un nombre ou un texte.
-- Reglages de la prochaine planete : part d'ocean, hauteur du relief, temperature, **taille** (de 0.25 a 2 fois la Terre),
-  **nombre de villes** (de 0 a 400) et **rivieres** (a decocher pour une planete sans rivieres).
-- **Distance de rendu**, de 5 a 1000 km (80 par defaut), appliquee tout de suite et conservee d'une planete a l'autre.
-  Au-dela, le relief perd vite ses details. Elle regle aussi la portee de la vegetation : jusqu'a 6 km pour les arbres,
-  320 m pour l'herbe. Au demarrage : `--render-distance 200`.
-- **Aller dans l'espace** et **Retourner a la surface**.
-- **Aller a la ville la plus proche** : arrivee en vol, a 2 km au sud du centre. L'affichage tete haute donne le nom, le plan et la direction de la ville la plus proche.
-- **Carte** de la planete : relief, rivieres et lacs, frontieres de plaques en option. Un clic y envoie le joueur en survol.
-- **Mois**, de 1 a 12 (juillet par defaut) : place l'annee a ce mois. L'affichage tete haute donne le temps
-  qu'il fait (ligne "Temps" : mois, temperature, pluie ou neige, sol mouille ou enneige).
+- **New random planet**, or **Generate with this seed**: the seed can be a number or text.
+- Settings for the next planet: ocean share, relief height, temperature, **size** (0.25 to 2 times the Earth),
+  **number of cities** (0 to 400) and **rivers** (uncheck for a planet without rivers).
+- **Render distance**, from 5 to 1000 km (80 by default), applied immediately and kept from one planet to the next.
+  Beyond it, the terrain quickly loses detail. It also sets the vegetation range: up to 6 km for trees,
+  320 m for grass. At startup: `--render-distance 200`.
+- **Go to space** and **Back to the surface**.
+- **Go to the nearest city**: arrive flying, 2 km south of the center. The HUD shows the name, the map and the direction of the nearest city.
+- Planet **map**: terrain, rivers and lakes, plate boundaries as an option. Clicking on it sends the player flying over that spot.
+- **Month**, from 1 to 12 (July by default): sets the year to that month. The HUD shows the weather
+  ("Weather" line: month, temperature, rain or snow, wet or snowy ground).
 
-La simulation d'une nouvelle planete prend quelques secondes en arriere-plan : le jeu continue sur l'ancienne en attendant.
+Simulating a new planet takes a few seconds in the background: the game keeps running on the old one in the meantime.
 
-Depuis l'espace, la camera reste en place et la nouvelle planete apparait dessous.
-Pres du sol, elle est deplacee sur un point de depart de la nouvelle planete.
+From space, the camera stays where it is and the new planet appears below.
+Near the ground, it is moved to a starting point on the new planet.
 
 ## Options
 
-`terra-demo --help` liste tout. Les valeurs avec une virgule se mettent entre guillemets sous PowerShell. Exemples :
+`terra-demo --help` lists everything. Values containing a comma must be quoted in PowerShell. Examples:
 
 ```powershell
-# La planete 3, vue de l'espace a midi
+# Planet 3, seen from space at noon
 .\cargo.ps1 run --release -- --seed 3 --altitude 13000000 --pitch -89 --time 0.5
 
-# Au-dessus d'un point precis, au lever du soleil
+# Above a specific spot, at sunrise
 .\cargo.ps1 run --release -- --pos "48.85,2.35" --altitude 2000 --time 0.28
 
-# Capture automatique une fois le monde charge
-.\cargo.ps1 run --release -- --seed 7 --screenshot vue.png
+# Automatic screenshot once the world has loaded
+.\cargo.ps1 run --release -- --seed 7 --screenshot view.png
 
-# Une petite planete, 60 villes, sans rivieres
+# A small planet, 60 cities, no rivers
 .\cargo.ps1 run --release -- --planet-size 0.5 --cities 60 --no-rivers
 
-# Au volant, sur l'autoroute qui sort de Pallac (planete 3) ; --cockpit pour la vue du conducteur
+# Driving, on the highway leaving Pallac (planet 3); --cockpit for the driver view
 .\cargo.ps1 run --release -- --seed 3 --drive --pos "-48.1126,48.5451" --yaw 93
 
-# Sur la grille de depart du circuit le plus proche du point d'arrivee (Sochi Autodrom pres de Venolport, planete 3)
+# On the starting grid of the circuit closest to the arrival point (Sochi Autodrom near Venolport, planet 3)
 .\cargo.ps1 run --release -- --seed 3 --circuit
 
-# Au pied de la route de montagne la plus proche : ici celle de Toranbourg, 13 epingles (planete 3)
+# At the foot of the nearest mountain road: here the one at Toranbourg, 13 hairpins (planet 3)
 .\cargo.ps1 run --release -- --seed 3 --pos "-53.9113,81.1318" --montagne
 
-# En janvier sous la neige (TERRA_MONTH : 1 a 12 ; TERRA_RAIN : 0 a 1 force les precipitations)
+# In January under snow (TERRA_MONTH: 1 to 12; TERRA_RAIN: 0 to 1 forces precipitation)
 $env:TERRA_MONTH = "1"; $env:TERRA_RAIN = "0.8"; .\cargo.ps1 run --release -- --seed 3 --pos "55,-95" --altitude 3
 
-# Descente de l'orbite jusqu'au sol, affiche les temps d'image
+# Descent from orbit down to the ground, prints frame times
 .\cargo.ps1 run --release -- --no-vsync --altitude 13000000 --pitch -89 --autopilot 440000
 ```
 
-## Ecrire un jeu
+## Writing a game
 
-Implementer `terra::Game`, puis appeler `terra::run` :
+Implement `terra::Game`, then call `terra::run`:
 
 ```rust
-use terra::{Camera, Context, EngineConfig, Game, PlanetParams, PlayerController, PLANET_RADIUS};
+use terra::{planet_radius, Camera, Context, EngineConfig, Game, PlanetParams, PlayerController};
 
-struct MonJeu { joueur: PlayerController }
+struct MyGame { player: PlayerController }
 
-impl Game for MonJeu {
+impl Game for MyGame {
     fn start(&mut self, ctx: &mut Context) {
         let dir = ctx.world.find_spawn();
-        let rayon = PLANET_RADIUS + ctx.world.height(dir) as f64 + 2.0;
-        *ctx.camera = Camera::new(dir * rayon, 0.0, 0.0);
+        let radius = planet_radius() + ctx.world.height(dir) as f64 + 2.0;
+        *ctx.camera = Camera::new(dir * radius, 0.0, 0.0);
     }
     fn update(&mut self, ctx: &mut Context, dt: f32) {
-        self.joueur.update(ctx.input, ctx.camera, ctx.streamer, dt);
+        self.player.update(ctx.input, ctx.camera, ctx.streamer, dt);
     }
 }
 
 fn main() {
     let planet = PlanetParams { seed: 42, ..Default::default() };
-    let jeu = MonJeu { joueur: PlayerController::default() };
-    terra::run(EngineConfig { planet, ..Default::default() }, jeu).unwrap();
+    let game = MyGame { player: PlayerController::default() };
+    terra::run(EngineConfig { planet, ..Default::default() }, game).unwrap();
 }
 ```
 
-`Context` donne acces aux entrees, a la camera, au ciel, a la fonction de planete
-(hauteur, climat, biome pour une direction), aux objets charges et a la regeneration (`ctx.regenerate`).
+`Context` gives access to input, the camera, the sky, the planet function
+(height, climate, biome for a direction), loaded objects and regeneration (`ctx.regenerate`).
 
 ## Architecture
 
-| Fichier | Role |
+| File | Role |
 | --- | --- |
-| `world/noise.rs` | Bruit de gradient 3D a derivees analytiques, en f64 |
-| `world/cube.rs` | Grilles globales sur le cube-sphere, champs interpoles sans raccord |
-| `world/tectonics.rs` | Simulation des plaques : cycle de Wilson (dechirure de la Pangee, traction des plaques plongeantes, collisions et sutures), subduction, dorsales, points chauds |
-| `world/landforms.rs` | Filtre d'erosion, provinces de paysage, volcans (subductions et points chauds), vents et humidite |
-| `world/hydrology.rs` | Erosion, drainage sur des noeuds irreguliers, lacs et reseau de rivieres |
-| `world/generator.rs` | Fonction (parametres, direction) vers relief, eau, climat, biome, couleur |
-| `world/chunk.rs` | Quadtree sur les 6 faces d'un cube-sphere, maillages (morphing, jupes), surface de l'eau |
-| `world/city.rs` | Villes : emplacement sur la planete, plan des rues (damier, ilots, etoile, vieille ville), ilots, parcelles, batiments, collisions |
-| `world/highway.rs` | Autoroutes entre les villes : graphe de voisinage, trace A* qui evite la mer et les autres autoroutes, ponts, viaducs et passages superieurs, profil en long, remodelage du sol |
-| `world/mountain.rs` | Routes de montagne : sommet vise, trace en lacets par A* a pente limitee (32 caps, epingles), lissage, profil en long, remodelage du sol, index spatial |
-| `world/circuit.rs`, `world/circuit_data.rs` | Circuits : 40 traces reels de F1, place pres de chaque ville sur un terrain plat et sec, route d'acces, profil en long, degagements, index spatial |
-| `world/city_mesh.rs` | Maillages des batiments, des rues, des ponts et du mobilier urbain, par niveau de detail |
-| `world/scatter.rs` | Placement deterministe de la vegetation et des rochers |
-| `world/streaming.rs` | Selection du LOD, horizon, threads de generation, cache, collisions |
-| `render/mod.rs` | Rendu wgpu : ombres, scene HDR, ocean, nuages, sortie, interface |
-| `render/meshes.rs` | Arbres (20 especes : tronc, branches, rameaux et paquets de feuilles), herbes et rochers generes par code |
-| `weather.rs` | Saisons (inclinaison du soleil, temperatures du mois), perturbations, pluie, neige, sol mouille, adherence |
-| `render/noise_tex.rs` | Texture de bruit 3D periodique, pour les nuages, le terrain et l'eau |
-| `render/shaders/` | Shaders WGSL, dont `city.wgsl` : facades, fenetres, toits, chaussee, eclairage de nuit, et la voiture dessinee au pixel (joints, poignees, optiques, feux, calandre, plaques, pneus, compteurs) |
-| `vehicle/model.rs` | Voiture generee par code (plus de 20 000 sommets) : carrosserie lissee sur 161 sections, passages de roues, pneus, jantes a 10 branches, disques et etriers, retroviseurs, essuie-glaces, echappements, habitacle (sieges, planche de bord, compteurs, ecran, volant) |
-| `vehicle/dynamics.rs` | Dynamique du vehicule : caisse rigide en 3D, suspensions (ressorts, amortisseurs, butees, barres antiroulis), pneus Pacejka avec relaxation, moteur, boite automatique 7 rapports, differentiel, ABS, antipatinage, aerodynamique, contacts de la caisse avec le sol |
-| `vehicle/mod.rs` | Conduite : commandes, plan du sol sous chaque roue (relief, tabliers d'autoroute et ponts de ville, eau, revetement), chocs contre batiments et arbres, bosses de carrosserie, remise sur roues, cameras |
-| `audio.rs` | Son synthetise en direct (cpal) : moteur, pneus, roulement, vent, chocs ; vent, feuillages, oiseaux, grillons, vagues, riviere, ville |
-| `world/fast_hash.rs` | Table de hachage rapide (FxHash) pour les identifiants de noeuds et de cellules |
-| `ui.rs` | Menu et affichage tete haute, avec egui |
-| `app.rs`, `camera.rs`, `input.rs`, `player.rs`, `sky.rs` | Boucle de jeu, API et controleur |
-| `bin/audit.rs`, `bin/probe.rs`, `bin/biome_spots.rs`, `bin/ocean_depth.rs`, `bin/tunnels.rs`, `bin/river_spots.rs`, `tour.ps1` | Controle de la beaute : statistiques, sonde d'un lieu (`probe GRAINE LAT LON`), lieu le plus boise de chaque biome et hemisphere (`biome_spots GRAINE`), profondeur des mers et profil depuis le rivage (`ocean_depth GRAINE`), pentes et tunnels des autoroutes (`tunnels GRAINE`), embouchures et confluences des grandes rivieres (`river_spots GRAINE`), planches de captures (compiler avant `tour.ps1`) |
+| `world/noise.rs` | 3D gradient noise with analytic derivatives, in f64 |
+| `world/cube.rs` | Global grids on the cube-sphere, seamlessly interpolated fields |
+| `world/tectonics.rs` | Plate simulation: Wilson cycle (Pangaea rifting, slab pull, collisions and sutures), subduction, mid-ocean ridges, hotspots |
+| `world/landforms.rs` | Erosion filter, landscape provinces, volcanoes (subduction zones and hotspots), winds and moisture |
+| `world/hydrology.rs` | Erosion, drainage over irregular nodes, lakes and river network |
+| `world/generator.rs` | Function from (parameters, direction) to terrain, water, climate, biome, color |
+| `world/chunk.rs` | Quadtree on the 6 faces of a cube-sphere, meshes (morphing, skirts), water surface |
+| `world/city.rs` | Cities: placement on the planet, street plan (grid, blocks, star, old town), blocks, lots, buildings, collisions |
+| `world/highway.rs` | Highways between cities: neighborhood graph, A* routing that avoids the sea and other highways, bridges, viaducts and overpasses, longitudinal profile, ground reshaping |
+| `world/mountain.rs` | Mountain roads: target summit, switchback routing by slope-limited A* (32 headings, hairpins), smoothing, longitudinal profile, ground reshaping, spatial index |
+| `world/circuit.rs`, `world/circuit_data.rs` | Circuits: 40 real F1 layouts, placed near each city on flat dry land, access road, longitudinal profile, run-off areas, spatial index |
+| `world/city_mesh.rs` | Meshes for buildings, streets, bridges and street furniture, per level of detail |
+| `world/scatter.rs` | Deterministic placement of vegetation and rocks |
+| `world/streaming.rs` | LOD selection, horizon, generation threads, cache, collisions |
+| `render/mod.rs` | wgpu rendering: shadows, HDR scene, ocean, clouds, output, UI |
+| `render/meshes.rs` | Procedurally generated trees (20 species: trunk, limbs, twigs and leaf clusters), grass and rocks |
+| `weather.rs` | Seasons (sun tilt, monthly temperatures), weather fronts, rain, snow, wet ground, grip |
+| `render/noise_tex.rs` | Periodic 3D noise texture, for clouds, terrain and water |
+| `render/shaders/` | WGSL shaders, including `city.wgsl`: facades, windows, roofs, roadway, night lighting, and the car drawn per pixel (panel gaps, handles, lights, grille, plates, tires, gauges) |
+| `vehicle/model.rs` | Procedurally generated car (over 20,000 vertices): body smoothed over 161 sections, wheel arches, tires, 10-spoke rims, discs and calipers, mirrors, wipers, exhausts, interior (seats, dashboard, gauges, screen, steering wheel) |
+| `vehicle/dynamics.rs` | Vehicle dynamics: rigid 3D body, suspension (springs, dampers, bump stops, anti-roll bars), Pacejka tires with relaxation, engine, 7-speed automatic gearbox, differential, ABS, traction control, aerodynamics, body contact with the ground |
+| `vehicle/mod.rs` | Driving: controls, ground plane under each wheel (terrain, highway decks and city bridges, water, surface type), impacts against buildings and trees, body dents, flipping back onto the wheels, cameras |
+| `audio.rs` | Sound synthesized live (cpal): engine, tires, rolling, wind, impacts; wind, foliage, birds, crickets, waves, river, city |
+| `world/fast_hash.rs` | Fast hash table (FxHash) for node and cell identifiers |
+| `ui.rs` | Menu and HUD, with egui |
+| `app.rs`, `camera.rs`, `input.rs`, `player.rs`, `sky.rs` | Game loop, API and controller |
+| `bin/audit.rs`, `bin/probe.rs`, `bin/biome_spots.rs`, `bin/ocean_depth.rs`, `bin/tunnels.rs`, `bin/river_spots.rs`, `tour.ps1` | Visual quality checks: statistics, location probe (`probe SEED LAT LON`), most wooded spot of each biome and hemisphere (`biome_spots SEED`), sea depth and profile from the shore (`ocean_depth SEED`), highway grades and tunnels (`tunnels SEED`), mouths and confluences of the large rivers (`river_spots SEED`), screenshot contact sheets (build before `tour.ps1`) |
 
-Choix principaux :
+Main design choices:
 
-- **Une simulation, puis une fonction pure.** Rayon de 6 371 km. La creation calcule une fois les grilles globales ; ensuite, tout se deduit de ces grilles et du bruit, et une meme direction donne toujours le meme resultat.
-- **Tectonique.** Un cycle de Wilson en 48 pas. Les continents partent reunis en une Pangee, qui se dechire le long de grands cercles bruites : chaque moitie part de son cote, avec des epaulements de rift. Les plaques tournent autour de leur pole d'Euler, et ce pole se tourne vers leurs bords qui plongent : c'est la traction de la plaque plongeante, principale force motrice selon Forsyth et Uyeda (1975). Les plaques oceaniques vont donc plus vite que les continents. Deux continents qui se heurtent freinent, s'epaississent en chaines de montagnes, puis se soudent en une seule plaque apres une collision durable (suture, comme l'Inde contre l'Asie). Des points chauds fixes dans le manteau percent les plaques qui passent : chapelets d'iles volcaniques qui s'enfoncent en s'eloignant du point chaud, comme Hawaii. Sur les planetes 1 a 6 : 2 a 7 dechirures, 3 a 5 sutures, 9 a 12 plaques a la fin.
-- **Erosion.** Un modele de puissance fluviale creuse les bassins versants a 39 puis 20 km de resolution.
-- **Mers.** Le fond suit la simulation : 3 600 m en moyenne au large (planete 3). Pres des cotes, la grille globale ne donnerait qu'une pente de quelques metres par kilometre, donc de l'eau a hauteur de cheville sur des kilometres : un avant-cote creuse le fond, plus raide le long des cotes rocheuses. Il y a environ 12 m d'eau a 500 m du rivage, 23 m a 2 km, 56 m a 10 km et 135 m a 30 km, comme le plateau continental terrestre. Les lagunes des plaines cotieres restent peu profondes.
-- **Lacs.** Le remplissage des depressions sur une grille de 13 km donne leur niveau et leur exutoire. Des cuvettes s'ajoutent dans le froid et au pied des chaines. Chaque lac deborde dans une riviere.
-- **Rivieres.** L'ecoulement suit la plus forte pente entre des noeuds decales au hasard autour du centre de chaque case (dans l'esprit de Cordonnier et al. 2016), et non les 8 directions d'une grille : les rivieres ne sont plus rectilignes. Dans les zones plates comblees, l'ordre de remplissage est tire au hasard, ce qui donne des arbres ramifies au lieu de lignes paralleles. Le cumul des pluies designe les rivieres, qui naissent plus tot en altitude et descendent jusqu'a la mer ou un lac. Le seuil est regle sur [HydroRIVERS](https://www.hydrosheds.org/products/hydrorivers) (36 millions de km de rivieres pour les bassins de plus de 10 km2, longueur qui decroit comme la racine du seuil) : environ 4,4 millions de km sur la planete 3. Le debit fixe leur largeur et un cone de pente taille leur vallee. Aux confluences, l'affluent rejoint le cours principal en biais, dans le sens du courant, et non a angle droit au noeud ; les deux lits se fondent en un minimum doux, sans seuil ni mare ronde a la jonction. A l'embouchure, le lit s'evase en estuaire sur les derniers metres d'altitude, son niveau descend jusqu'a celui de la mer et ses berges deviennent des vasieres au lieu de digues ou de falaises.
-- **Sans couture.** Le bruit est evalue en 3D sur la sphere et les grilles sont raccordees le long des aretes du cube.
-- **Erosion sans simulation.** Le filtre de ravines de Rune Skovbo Johansen, adapte a la sphere : des rayures alignees sur la pente, en plusieurs octaves qui se ramifient, dessinent cretes et vallons en chaque point, sans voisins ni passes.
-- **Provinces de paysage.** Chaque region recoit une signature selon son climat : collines, plateaux et canyons a strates, terres ravinees, dunes, tours calcaires, landes a lacs, monolithes, vallees glaciaires et fjords. S'y ajoutent des volcans sur les subductions et au-dessus des points chauds de la simulation des plaques.
-- **Climat par les vents.** L'humidite part des oceans, suit les vents dominants et tombe sur les reliefs : les deserts se forment derriere les chaines.
-- **Relief a toutes les echelles.** Le spectre du relief suit a peu pres celui de la Terre (amplitude proportionnelle a la longueur d'onde) : grandes ondulations de 9 km, collines de 2,4 km, mottes de 420 m, detail de 95 m. Les ondulations et les collines utilisent un bruit amorti par sa propre pente (Inigo Quilez) : fonds de vallee doux, cretes nettes, comme apres l'erosion. Un bruit regional de 70 km fait alterner de rares vraies plaines et des pays bosseles.
-- **Montagnes alpines.** Sur les grandes cretes de 26 km s'ajoutent des aretes et des pics secondaires de 6,5 km, plus marques en altitude (multifractale hybride de Musgrave).
-- **Forets lisibles.** De grandes clairieres, des massifs de feuillus ou de coniferes, des taches claires et sombres dans la canopee, et des cretes degarnies qui dessinent le relief sous les arbres. Les maillages lointains et les arbres suivent les memes regles.
-- **Plaines vivantes.** Une houle de fond sur toutes les terres, des buttes isolees comme reperes, de grands pans d'herbe d'or et d'herbe verte, et des monolithes a parois de roche nue.
-- **Forets jusqu'a l'horizon.** Au-dela de la portee des arbres, le sol prend la couleur de la canopee, selon les memes regles que le placement des arbres.
-- **LOD CDLOD.** 18 niveaux, de 1,5 m a plus de 200 km entre deux sommets. Les noeuds caches par l'horizon ne sont ni generes ni dessines.
-- **Coordonnees f64.** La camera est en f64 et le GPU travaille relativement a elle, donc pas de tremblement a la surface.
-- **Vol.** Le regard suit la courbure pres du sol, puis garde une trajectoire droite au-dela de 300 km d'altitude.
-- **Generation en arriere-plan.** Le parent reste affiche tant que ses enfants visibles ne sont pas prets, donc pas de trous.
-- **Rendu.** Atmosphere a diffusion simple calculee par pixel, valable du sol a l'orbite, soleil selon la longitude, ombres en 3 cascades pres du sol, HDR, halo lumineux, rayons du soleil, FXAA. Le tone mapping melange ACES et une courbe sur la luminance, pour que les couchers de soleil restent orange.
-- **Nuages en volume.** Marche de rayons a demi-resolution dans un bruit 3D calcule au demarrage, avec voiles d'altitude. Bases plates, liseres d'argent face au soleil, ombres portees sur le relief et l'eau.
-- **Eau.** Vagues sur quatre echelles, reflets de l'image (montagnes et nuages) puis du ciel calcule, chemin de lumiere du soleil, ecume le long des rives.
-- **Terrain.** Couleur et relief ajoutes au pixel, du caillou au massif : le lointain garde sa texture, et les forets leurs cimes.
-- **Vegetation.** Herbes courbes, hautes herbes a epis qui s'embrasent a contre-jour, sapins dentueles, feuillages ajoures au pixel.
-- **Especes d'arbres.** Vingt especes choisies selon le biome, le climat de Koppen et l'altitude. Coniferes : epiceas et sapins, pins sylvestres (sols secs, hivers rudes), melezes (montagne et grand froid), sequoias geants (cotes tres arrosees et douces), cedres en plateaux (montagnes mediterraneennes), pins parasols et cypres. Feuillus : chenes, hetres (climats oceaniques), erables, bouleaux, oliviers, saules et peupliers d'Italie le long des rivieres, eucalyptus, acacias, baobabs, fromagers geants a contreforts qui percent la canopee tropicale, dragonniers des pays chauds et secs, palmiers. Les maillages ont la taille d'arbres adultes (chene 21 m, epicea 30 m, sequoia 68 m) ; l'age du peuplement les fait varier de 55 a 145 %.
-- **Arbres construits.** Chaque feuillu a un fut evase, des maitresses branches qui vont de la fourche (ou d'une fleche) vers la surface de son houppier, des rameaux secondaires, des brindilles en eventail et des paquets de feuilles au bout des branches, plus sombres en bas et au coeur. Au pixel, trois echelles de bruit decoupent les bords et donnent des grappes claires et des creux sombres. Chaque arbre a sa propre forme, tiree de son cap : elance ou trapu, houppier ovale, penche, feuillage bossele autrement. Palmiers a folioles, rosettes des dragonniers, rideau de rameaux des saules.
-- **Saisons des arbres.** La ou l'hiver est froid, les feuillus suivent la temperature du mois : jeunes feuilles claires au printemps, or (bouleau, saule, peuplier, meleze), orange et brun (chene, hetre) ou rouge (erable) a l'automne, puis branches nues l'hiver, avec un fin reseau de brindilles que la neige coiffe, et plus d'ombre portee par le houppier. Chaque arbre vire a quelques jours d'ecart. Vues de loin, les forets prennent les memes couleurs.
-- **Saisons et meteo.** Une annee de jeu dure 30 jours de jeu par defaut. L'inclinaison du soleil suit la saison (23,44 degres) et chaque lieu passe de ses temperatures de janvier a celles de juillet, a l'oppose dans l'autre hemisphere. Des perturbations de 320 km et des averses de 40 km derivent a 12 m/s ; il pleut ou neige sous elles d'autant plus souvent que le lieu est arrose a ce mois (quelques heures par mois au desert, un jour sur trois sous les tropiques humides). En jeu : traits de pluie ou flocons masques par le relief, rideau gris qui bouche l'horizon, ciel qui se ferme, sol qui fonce en se mouillant puis seche, neige qui tient l'hiver sur les replats, les branches et les herbes, mers et lacs geles avec un peu de retard sur le froid. Les pneus perdent jusqu'a 22 % d'adherence sur le mouille et 55 % sur la neige.
-- **Villes.** Environ 140 villes sur la planete 3, posees sur des terres seches et peu pentues, souvent au bord de l'eau. Quatre plans inspires de villes reelles : damier a avenues larges (Manhattan, plan de 1811), ilots a pans coupes (l'Eixample de Cerda a Barcelone), etoile d'avenues rayonnantes avec un quartier d'affaires au bout de l'axe (Paris et la Defense), vieille ville aux rues organiques (croissance par segments, d'apres Parish et Muller 2001). Les ilots sont decoupes en parcelles, a la maniere de Vanegas et al. 2012. Le bati s'effiloche vers l'exterieur : lobes, echancrures, hameaux et maisons le long des routes de sortie.
-- **Autoroutes.** Les villes voisines sont reliees par un graphe de voisinage relatif (Toussaint 1980), complete pour rejoindre les morceaux isoles. Le trace contourne relief, lacs et villes, passe la mer peu profonde sur de longs ponts, et s'ecarte des autres autoroutes ; les croisements deviennent des passages superieurs. Profil en long lisse, deblais et remblais, viaducs sur piles, glissieres en beton, portiques, 2 ou 3 voies par sens selon la taille des villes.
-- **Tunnels.** Quand une crete depasse de plus de 80 m les rampes a 4 % qu'on pourrait tirer de part et d'autre, l'autoroute passe dessous en ligne droite d'un pied a l'autre. Les tetes sont placees la ou la couverture depasse 12 m : portail en beton a deux voutes, murs en aile dans la tranchee d'acces. Dedans : deux tubes carreles, voute noircie, lampes tous les 12 m et ventilateurs ; le jour s'eteint sur les 80 premiers metres, la pluie s'arrete, la voiture, le joueur et la camera restent sous la voute. Sur les 60 premieres autoroutes de la planete 3 : 298 tunnels (405 km), et les pentes de plus de 10 % passent de 460 a 128 km. `tunnels GRAINE` donne ces chiffres et des points de vue.
-- **Carrefours.** Une rue qui debouche en biais s'arrete le long du bord de la chaussee croisee, sans triangle de terre entre les deux ; un test verifie qu'il y a de l'asphalte de part et d'autre de chaque bout de rue.
-- **Rues reliees.** Le plan de chaque ville est verifie : toutes ses rues forment un seul reseau (les contacts sont calcules geometriquement), et chaque bout d'autoroute arrive sur une rue. Une rue isolee est rattachee par le plus court chemin parmi les rues ecartees, ou retiree avec son ilot. `planet_stats` controle tous les plans d'une planete.
-- **Physique de la voiture.** Dans l'esprit des simulateurs comme BeamNG, rien n'est anime : tout sort du calcul. La caisse est un corps rigide en 3D (1 550 kg, inertie en tangage, lacet et roulis) porte par quatre suspensions independantes : ressort d'environ 1,5 Hz, amortisseur plus ferme en detente qu'en compression, butee de fin de course, barres antiroulis. La charge de chaque pneu est la force de sa suspension, donc la plongee au freinage, le cabrage, le roulis en virage, les roues qui decollent, les sauts et les retombees viennent d'eux-memes. Les pneus suivent la formule magique de Pacejka sur le glissement combine, avec une longueur de relaxation : le pneu se deforme avant de glisser, ce qui tient aussi la voiture en pente a l'arret. Le sol est un plan sonde sous chaque roue (relief, rues, ponts, autoroutes, circuits, eau), avec son adherence et sa resistance au roulement. Si la caisse touche le sol (tonneau, gros saut), sa tole frotte et rebondit ; R remet la voiture sur ses roues. Les chocs contre les batiments et les arbres sont des impulsions au point d'impact (un choc sur un coin fait pivoter la voiture) et laissent des bosses dans la carrosserie. Moteur de 470 Nm, boite automatique a 7 rapports, differentiel a glissement limite, ABS, antipatinage, frein a main, trainee et appui. Integration a 240 Hz. Mesures des tests : 0 a 100 km/h en 4,9 s, freinage de 100 a 0 en 35 m au plus, environ 1,2 g en virage (pneus tres adherents), une oscillation puis le repos apres une chute.
-- **Circuits de F1.** Pres de chaque ville qui a la place, un circuit au trace reel de Formule 1 (Monza, Spa, Suzuka, Silverstone, Interlagos, Bakou...), a l'echelle exacte, pose sur un terrain sec et peu pentu, loin des autoroutes. Une route d'acces part d'une avenue de la ville. Piste a lignes blanches et trace de gomme, vibreurs rouges et blancs dans les virages, bacs a gravier a l'exterieur des courbes rapides, degagements en herbe, glissieres, ligne d'arrivee en damier, grille de depart, tribune couverte et muret des stands. Pentes ecretees a 12 %. Traces tires de [bacinger/f1-circuits](https://github.com/bacinger/f1-circuits) (licence MIT).
-- **Routes de montagne.** Autour de chaque ville entouree de reliefs partent jusqu'a quatre routes (pres de 70 sur la planete 3), chacune vers un sommet dans une direction differente, au moins 300 m plus haut (route du mont, du col, des cretes, du pic), et finit en raquette autour d'un ilot d'herbe. Le trace est cherche par A* sur une grille de 40 m dont chaque etat est une case et un cap parmi 32, dans l'esprit de Galin et al. 2010 : la route ne tourne que d'un cran par pas et ne monte jamais plus de 10 % ; la ou le versant est trop raide, le seul moyen de monter est l'epingle, un demi-tour decale d'une ou deux cases, suivi d'au moins 120 m de ligne droite. Les lacets s'empilent donc d'eux-memes sur les pentes fortes, et la route reste droite ailleurs. Une route qui se recroise est recherchee en evitant l'endroit. Profil en long ecrete a 12 %, deblais et remblais, deux voies etroites a axe en tirets, glissieres d'acier ou parapets de pierre du cote du vide.
-- **Voiture.** Berline modelisee par code et dessinee au pixel, posee a chaque image : roues qui tournent et braquent, volant, suspension, feux stop, de recul, clignotants et phares.
-- **Forets claires.** Couvert de 50 a 80 % au coeur des massifs, bois clairs sur les lisieres, trouees de quelques dizaines de metres, grandes clairieres sur un tiers du pays. L'age du peuplement fait varier la taille des arbres ; les arbres isoles sont plus grands.
-- **Villes differentes.** Chaque ville a son caractere : basse et etalee ou haute et serree, et une palette dominante (enduits blancs, ocres, brique, pastels ; tuiles rouges ou ardoise). Maisons en L, pavillons et villas, petits immeubles parmi les maisons ; tours sur socle, en gradins ou jumelles ; une ligne de toits irreguliere.
-- **Batiments.** Maisons avec garage, piscine et haie ; maisons de ville a volets ; immeubles haussmanniens a balcons et toits mansardes ; barres et residences ; bureaux ; quatre familles de gratte-ciel (art deco, verre, octogone, fuseau) ; entrepots, citernes, cheminees, eglises, places et fontaines. Fenetres, encadrements, vitrines et enseignes sont dessines au pixel ; la nuit, une partie des fenetres s'allument.
-- **Rues.** Chaussee a voies et marquages, trottoirs et bordures, passages pietons, lampadaires, arbres d'alignement, voitures garees, ponts a parapets et piles au-dessus de l'eau. De loin, seule la silhouette des tours reste.
-- **Arrivee.** Le joueur apparait sur une rive degagee, face au soleil couchant : il reste fige a 5 degres de l'horizon jusqu'a ce qu'on change l'heure avec T et G, ou qu'on lance `--day-length 1800`.
+- **One simulation, then a pure function.** Radius of 6,371 km. Creation computes the global grids once; after that, everything is derived from these grids and from noise, and the same direction always gives the same result.
+- **Tectonics.** A Wilson cycle in 48 steps. The continents start joined in a Pangaea, which rifts along noisy great circles: each half drifts its own way, with rift shoulders. Plates rotate around their Euler pole, and that pole turns toward their sinking edges: this is slab pull, the main driving force according to Forsyth and Uyeda (1975). Oceanic plates therefore move faster than continents. Two colliding continents slow down, thicken into mountain ranges, then weld into a single plate after a lasting collision (a suture, like India against Asia). Fixed hotspots in the mantle pierce the plates passing over them: chains of volcanic islands that sink as they move away from the hotspot, like Hawaii. On planets 1 to 6: 2 to 7 rifts, 3 to 5 sutures, 9 to 12 plates at the end.
+- **Erosion.** A stream power model carves the drainage basins at 39 then 20 km resolution.
+- **Seas.** The sea floor follows the simulation: 3,600 m on average offshore (planet 3). Near the coasts, the global grid would only give a slope of a few meters per kilometer, so ankle-deep water for kilometers: a shoreface carves the floor, steeper along rocky coasts. There is about 12 m of water 500 m from the shore, 23 m at 2 km, 56 m at 10 km and 135 m at 30 km, like the Earth's continental shelf. Lagoons on coastal plains stay shallow.
+- **Lakes.** Depression filling on a 13 km grid gives their level and outlet. Extra basins are added in cold regions and at the foot of mountain ranges. Every lake overflows into a river.
+- **Rivers.** Water follows the steepest descent between nodes randomly offset around the center of each cell (in the spirit of Cordonnier et al. 2016), not the 8 directions of a grid: rivers are no longer straight. In filled flat areas, the filling order is randomized, which gives branching trees instead of parallel lines. Accumulated rainfall determines the rivers, which start earlier at high altitude and flow down to the sea or a lake. The threshold is tuned on [HydroRIVERS](https://www.hydrosheds.org/products/hydrorivers) (36 million km of rivers for basins over 10 km², a length that decreases as the square root of the threshold): about 4.4 million km on planet 3. Discharge sets their width and a slope cone carves their valley. At confluences, the tributary joins the main river at an angle, with the current, rather than at a right angle on the node; the two beds blend through a soft minimum, with no sill or round pool at the junction. At the mouth, the bed widens into an estuary over the last meters of elevation, its level drops down to sea level and its banks become mudflats instead of levees or cliffs.
+- **Seamless.** Noise is evaluated in 3D on the sphere and grids are stitched along the edges of the cube.
+- **Erosion without simulation.** Rune Skovbo Johansen's gully filter, adapted to the sphere: stripes aligned with the slope, in several branching octaves, draw ridges and valleys at every point, without neighbors or passes.
+- **Landscape provinces.** Each region gets a signature based on its climate: hills, layered plateaus and canyons, badlands, dunes, karst towers, lake-dotted moors, monoliths, glacial valleys and fjords. On top of that come volcanoes along subduction zones and above the hotspots of the plate simulation.
+- **Wind-driven climate.** Moisture leaves the oceans, follows the prevailing winds and falls on high ground: deserts form behind mountain ranges.
+- **Terrain at every scale.** The terrain spectrum roughly follows the Earth's (amplitude proportional to wavelength): broad 9 km undulations, 2.4 km hills, 420 m mounds, 95 m detail. Undulations and hills use noise damped by its own slope (Inigo Quilez): soft valley floors, sharp ridges, as after erosion. A 70 km regional noise alternates rare true plains with bumpy country.
+- **Alpine mountains.** On top of the large 26 km ridges come secondary 6.5 km arêtes and peaks, stronger at altitude (Musgrave's hybrid multifractal).
+- **Readable forests.** Large clearings, stands of broadleaf or conifer trees, light and dark patches in the canopy, and bare ridges that reveal the terrain under the trees. Distant meshes and trees follow the same rules.
+- **Living plains.** A ground swell over all land, isolated buttes as landmarks, large swathes of golden and green grass, and monoliths with bare rock walls.
+- **Forests to the horizon.** Beyond tree range, the ground takes the canopy's color, following the same rules as tree placement.
+- **CDLOD.** 18 levels, from 1.5 m to over 200 km between two vertices. Nodes hidden by the horizon are neither generated nor drawn.
+- **f64 coordinates.** The camera is in f64 and the GPU works relative to it, so there is no jitter at the surface.
+- **Flight.** The view follows the curvature near the ground, then keeps a straight path above 300 km altitude.
+- **Background generation.** A parent stays displayed until its visible children are ready, so there are no holes.
+- **Rendering.** Single-scattering atmosphere computed per pixel, valid from the ground to orbit, sun based on longitude, 3 shadow cascades near the ground, HDR, bloom, sun rays, FXAA. Tone mapping blends ACES with a luminance curve so sunsets stay orange.
+- **Volumetric clouds.** Half-resolution ray marching through a 3D noise computed at startup, with high-altitude veils. Flat bases, silver linings facing the sun, shadows cast on terrain and water.
+- **Water.** Waves at four scales, screen-space reflections (mountains and clouds) then of the computed sky, sun glitter path, foam along shores.
+- **Terrain.** Color and relief added per pixel, from pebbles to massifs: the distance keeps its texture, and forests their treetops.
+- **Vegetation.** Curved grass, tall seed-headed grass that glows against the light, jagged firs, foliage cut out per pixel.
+- **Tree species.** Twenty species chosen by biome, Köppen climate and altitude. Conifers: spruces and firs, Scots pines (dry soils, harsh winters), larches (mountains and deep cold), giant sequoias (very wet, mild coasts), cedars on plateaus (Mediterranean mountains), stone pines and cypresses. Broadleaves: oaks, beeches (oceanic climates), maples, birches, olive trees, willows and Lombardy poplars along rivers, eucalyptus, acacias, baobabs, giant buttressed kapok trees that pierce the tropical canopy, dragon trees in hot dry lands, palms. Meshes have the size of mature trees (oak 21 m, spruce 30 m, sequoia 68 m); stand age varies them from 55 to 145%.
+- **Built trees.** Each broadleaf has a flared bole, main limbs running from the fork (or a leader) to the surface of its crown, secondary branches, fanned twigs and leaf clusters at the branch tips, darker low down and in the core. Per pixel, three noise scales cut the edges and give bright clumps and dark hollows. Each tree has its own shape, drawn from its heading: slender or squat, oval crown, leaning, foliage lumped differently. Palms with leaflets, dragon tree rosettes, curtains of willow twigs.
+- **Tree seasons.** Where winters are cold, broadleaves follow the month's temperature: light young leaves in spring, gold (birch, willow, poplar, larch), orange and brown (oak, beech) or red (maple) in autumn, then bare branches in winter, with a fine net of twigs capped by snow, and more shadow cast by the crown. Each tree turns a few days apart. Seen from afar, forests take the same colors.
+- **Seasons and weather.** A game year lasts 30 game days by default. The sun's tilt follows the season (23.44 degrees) and each place goes from its January temperatures to its July ones, the opposite way in the other hemisphere. 320 km weather fronts and 40 km showers drift at 12 m/s; it rains or snows under them more often where the place is wet that month (a few hours a month in deserts, one day in three in the humid tropics). In game: rain streaks or snowflakes masked by the terrain, a gray curtain closing the horizon, the sky clouding over, ground that darkens as it gets wet then dries, snow that settles in winter on flat ground, branches and grass, seas and lakes freezing a little after the cold. Tires lose up to 22% of their grip on wet ground and 55% on snow.
+- **Cities.** About 140 cities on planet 3, set on dry, gently sloping land, often by the water. Four plans inspired by real cities: grid with wide avenues (Manhattan, 1811 plan), chamfered blocks (Cerdà's Eixample in Barcelona), star of radiating avenues with a business district at the end of the axis (Paris and La Défense), old town with organic streets (segment-based growth, after Parish and Müller 2001). Blocks are subdivided into lots, in the manner of Vanegas et al. 2012. Buildings thin out toward the edge: lobes, indentations, hamlets and houses along the outgoing roads.
+- **Highways.** Neighboring cities are connected by a relative neighborhood graph (Toussaint 1980), completed to reach isolated pieces. The route avoids relief, lakes and cities, crosses shallow sea on long bridges, and keeps away from other highways; crossings become overpasses. Smooth longitudinal profile, cuts and fills, viaducts on piers, concrete barriers, gantries, 2 or 3 lanes per direction depending on city size.
+- **Tunnels.** When a ridge rises more than 80 m above the 4% ramps that could be drawn on either side, the highway goes under it in a straight line from one foot to the other. Portals sit where the cover exceeds 12 m: concrete portal with two arches, wing walls in the approach cut. Inside: two tiled bores, a sooty vault, lamps every 12 m and jet fans; daylight fades over the first 80 meters, rain stops, and the car, the player and the camera stay under the vault. On the first 60 highways of planet 3: 298 tunnels (405 km), and grades over 10% drop from 460 to 128 km. `tunnels SEED` prints these figures and viewpoints.
+- **Intersections.** A street meeting another at an angle stops along the edge of the crossing roadway, with no triangle of dirt between them; a test checks there is asphalt on both sides of every street end.
+- **Connected streets.** Each city plan is checked: all its streets form a single network (contacts are computed geometrically), and every highway end arrives on a street. An isolated street is reconnected by the shortest path among the discarded streets, or removed with its block. `planet_stats` checks every plan on a planet.
+- **Car physics.** In the spirit of simulators like BeamNG, nothing is animated: everything comes out of the computation. The body is a rigid 3D body (1,550 kg, pitch, yaw and roll inertia) carried by four independent suspensions: spring of about 1.5 Hz, damper stiffer in rebound than in compression, bump stop, anti-roll bars. Each tire's load is the force of its suspension, so dive under braking, squat, body roll in corners, wheels lifting off, jumps and landings all emerge on their own. The tires follow the Pacejka magic formula for combined slip, with a relaxation length: the tire deforms before it slides, which also holds the car still on a slope. The ground is a plane probed under each wheel (terrain, streets, bridges, highways, circuits, water), with its grip and rolling resistance. If the body touches the ground (rollover, big jump), its panels scrape and bounce; R puts the car back on its wheels. Impacts against buildings and trees are impulses at the contact point (a hit on a corner makes the car spin) and leave dents in the bodywork. 470 Nm engine, 7-speed automatic gearbox, limited-slip differential, ABS, traction control, handbrake, drag and downforce. Integrated at 240 Hz. Measured by tests: 0 to 100 km/h in 4.9 s, braking from 100 to 0 in 35 m at most, about 1.2 g in corners (very grippy tires), one oscillation then rest after a drop.
+- **F1 circuits.** Near each city with enough room, a circuit with a real Formula 1 layout (Monza, Spa, Suzuka, Silverstone, Interlagos, Baku...), at exact scale, set on dry, gently sloping land, away from highways. An access road leaves from one of the city's avenues. Track with white lines and rubber marks, red and white kerbs in corners, gravel traps outside fast bends, grass run-off areas, barriers, checkered finish line, starting grid, covered grandstand and pit wall. Gradients capped at 12%. Layouts taken from [bacinger/f1-circuits](https://github.com/bacinger/f1-circuits) (MIT license).
+- **Mountain roads.** Up to four roads leave each city surrounded by high ground (nearly 70 on planet 3), each toward a summit in a different direction, at least 300 m higher (mount, pass, ridge and peak roads), ending in a turning loop around a patch of grass. The route is found by A* on a 40 m grid where each state is a cell and one of 32 headings, in the spirit of Galin et al. 2010: the road only turns one notch per step and never climbs more than 10%; where the slope is too steep, the only way up is a hairpin, a U-turn offset by one or two cells, followed by at least 120 m of straight road. Switchbacks therefore stack up by themselves on steep slopes, and the road stays straight elsewhere. A road that crosses itself is searched again avoiding that spot. Longitudinal profile capped at 12%, cuts and fills, two narrow lanes with a dashed center line, steel guardrails or stone parapets on the drop side.
+- **Car.** A sedan modeled in code and drawn per pixel, posed every frame: wheels that spin and steer, steering wheel, suspension, brake lights, reverse lights, turn signals and headlights.
+- **Open forests.** 50 to 80% cover in the heart of stands, open woods at the edges, gaps of a few tens of meters, large clearings over a third of the land. Stand age varies tree size; isolated trees are taller.
+- **Distinct cities.** Each city has its own character: low and sprawling or tall and dense, and a dominant palette (white render, ochre, brick, pastels; red tiles or slate). L-shaped houses, bungalows and villas, small apartment blocks among the houses; towers on podiums, stepped or twin; an irregular skyline.
+- **Buildings.** Houses with garage, pool and hedge; townhouses with shutters; Haussmann-style buildings with balconies and mansard roofs; slab blocks and residences; offices; four families of skyscrapers (art deco, glass, octagon, spindle); warehouses, tanks, chimneys, churches, squares and fountains. Windows, frames, shop windows and signs are drawn per pixel; at night, some of the windows light up.
+- **Streets.** Roadway with lanes and markings, sidewalks and curbs, crosswalks, street lights, street trees, parked cars, bridges with parapets and piers over water. From afar, only the silhouette of the towers remains.
+- **Arrival.** The player appears on an open shore, facing the setting sun: it stays fixed 5 degrees above the horizon until you change the time with T and G, or launch with `--day-length 1800`.
 
-## Son
+## Sound
 
-Aucun fichier audio : tout est calcule en direct par `audio.rs`, sur la carte son par defaut (`--mute` ou M pour couper).
+No audio files: everything is computed live by `audio.rs`, on the default sound card (`--mute` or M to turn it off).
 
-- **Voiture.** Le moteur suit le regime et la charge de la dynamique : harmoniques de l'allumage d'un V8 (un cycle sur deux tours, l'ordre 8 pour l'allumage, l'ordre 4 pour le grondement), bruit d'echappement a chaque explosion, filtre qui s'ouvre avec la charge, souffle d'admission, limiteur, petarades au leve de pied. S'y ajoutent le claquement des passages de rapport, le crissement des pneus quand ils depassent leur pic d'adherence (sur l'asphalte seulement), le roulement et les graviers hors de la route, le vent qui monte avec la vitesse, et les chocs. En vue conducteur, l'habitacle etouffe les aigus.
-- **Ambiance.** Calculee autour de la camera quatre fois par seconde : vent en rafales (plus fort en altitude), feuillages et oiseaux pres des arbres le jour, grillons les nuits chaudes, vagues sur un rivage, eau qui coule pres d'une riviere ou d'un lac, rumeur et klaxons lointains en ville, souffle de la vitesse en vol. Les sons du sol s'effacent quand on prend de la hauteur.
-- **Cout.** Moins de 4 % d'un coeur avec toutes les sources a la fois (mesure par un test). Le thread audio n'attend jamais le jeu.
-- **Ecouter sans lancer le jeu.** Une demonstration de 48 s (depart arrete avec la vraie dynamique, derapage, choc, bois, nuit, rivage, ville) :
+- **Car.** The engine follows the RPM and load from the dynamics: ignition harmonics of a V8 (one cycle every two revolutions, order 8 for ignition, order 4 for the rumble), exhaust noise on each firing, a filter that opens with load, intake whoosh, rev limiter, backfires on lift-off. On top of that come the clunk of gear shifts, tire squeal when they exceed their peak grip (on asphalt only), rolling noise and gravel off the road, wind rising with speed, and impacts. In the driver view, the cabin muffles the highs.
+- **Ambience.** Computed around the camera four times per second: gusty wind (stronger at altitude), foliage and birds near trees during the day, crickets on warm nights, waves on a shore, running water near a river or lake, distant hum and horns in the city, rush of speed when flying. Ground sounds fade as you gain height.
+- **Cost.** Under 4% of one core with all sources at once (measured by a test). The audio thread never waits for the game.
+- **Listen without launching the game.** A 48 s demo (standing start with the real dynamics, drift, crash, woods, night, shore, city):
 
 ```powershell
-$env:TERRA_WAV = "$PWD\son_demo.wav"; .\cargo.ps1 test --release --lib write_a_listening_demo
+$env:TERRA_WAV = "$PWD\sound_demo.wav"; .\cargo.ps1 test --release --lib write_a_listening_demo
 ```
 
-## Performances
+## Performance
 
-`TERRA_PROFILE=1` affiche toutes les 5 s le temps de chaque phase de l'image (jeu, streaming, envoi des chunks, interface, rendu), le detail du streaming (chunks choisis, charges, generes), le temps GPU de chaque passe (ombres, scene, nuages, reflets, eau, halo, sortie) et, au demarrage, chaque etape de la creation de la planete (eau, villes, autoroutes, plan des villes). `--no-vsync --autopilot VITESSE` fait un vol de mesure de 30 s et signale les images de plus de 12 ms.
+`TERRA_PROFILE=1` prints every 5 s the time of each frame phase (game, streaming, chunk upload, UI, rendering), streaming details (chunks selected, loaded, generated), the GPU time of each pass (shadows, scene, clouds, reflections, water, bloom, output) and, at startup, each step of planet creation (water, cities, highways, city plans). `--no-vsync --autopilot SPEED` runs a 30 s measurement flight and reports frames longer than 12 ms.
 
-`gen_bench [GRAINE]` mesure la generation seule : creation de la planete, plan des villes, chunks au depart et en ville par niveau de detail, arbres et herbes, detail par etape d'un chunk, et sondes de terrain sur 1 coeur puis sur tous.
+`gen_bench [SEED]` measures generation alone: planet creation, city plans, chunks at the start and in a city per level of detail, trees and grass, per-step detail of a chunk, and terrain probes on 1 core then on all of them.
 
 ```powershell
 .\cargo.ps1 run --release --bin gen_bench -- 3
 ```
 
-Mesures (planete 3, Ryzen 5 9600X, RX 9070 XT, sans vsync) :
+Measurements (planet 3, Ryzen 5 9600X, RX 9070 XT, no vsync):
 
-| Mesure | Debut | Avant cette passe | Apres |
+| Measurement | Start | Before this pass | After |
 | --- | --- | --- | --- |
-| Survol de ville a 40 m/s, image mediane | 4,49 ms | 2,59 ms | 2,18 ms |
-| Survol de ville, 99e centile | | 3,45 ms | 2,73 ms |
-| Vol rapide a 250 m/s, image mediane | 5,41 ms | 2,65 ms | 1,95 ms |
-| Vol rapide, 99e centile | | 5,3 ms | 3,0 ms |
-| Chunk moyen (1 coeur) | | 32,4 ms | 19,4 ms |
-| Gain du calcul sur 12 threads | | x2,4 | x7,6 |
-| Chunks generes en 5 s de jeu | | 920 | 1526 |
-| Creation de la planete | | 8,0 s | 3,6 s |
-| Plan des villes | | 2,2 s | 0,36 s |
-| Ombres GPU (1080p, 60 m) | | 0,93 ms | 0,5 ms |
+| City flyover at 40 m/s, median frame | 4.49 ms | 2.59 ms | 2.18 ms |
+| City flyover, 99th percentile | | 3.45 ms | 2.73 ms |
+| Fast flight at 250 m/s, median frame | 5.41 ms | 2.65 ms | 1.95 ms |
+| Fast flight, 99th percentile | | 5.3 ms | 3.0 ms |
+| Average chunk (1 core) | | 32.4 ms | 19.4 ms |
+| Speedup on 12 threads | | x2.4 | x7.6 |
+| Chunks generated in 5 s of play | | 920 | 1526 |
+| Planet creation | | 8.0 s | 3.6 s |
+| City plans | | 2.2 s | 0.36 s |
+| GPU shadows (1080p, 60 m) | | 0.93 ms | 0.5 ms |
 
-- Le rayon de la planete etait lu dans une variable de thread a chaque echantillon de bruit ; sous Windows (MinGW) cette lecture coutait 14 ns et empechait le calcul de profiter des coeurs. Un compteur atomique l'evite quand aucune planete n'est en creation.
-- Le bruit calcule ses 8 coins une seule fois et a une variante sans derivees ; les champs des provinces partagent la projection sur le cube ; les couleurs d'un sommet partagent un seul calcul du site.
-- La pente des ravines est interpolee sur une grille fixe de 175 m (ecart moyen 0,8 deg avec la pente exacte) et mise en cache entre les chunks.
-- Index des rivieres, plan des villes, routes noyees et autoroutes sont calcules en parallele (`par_map`) ; les threads de generation ont une priorite basse pour ne pas voler d'images au rendu.
-- Le quadtree n'est re-selectionne que si la camera a bouge ou si de nouveaux chunks sont arrives.
-- Les objets ne sont dessines que dans les cascades d'ombre qu'ils touchent ; la cascade lointaine utilise la geometrie du niveau de detail parent ; l'eau ne calcule le ciel que si le reflet ecran manque.
-- Les instances d'arbres et d'herbes (plus de 100 000 par image) se preparent sur plusieurs threads et partent directement dans le tampon du GPU ; les tables de chunks utilisent FxHash.
+- The planet radius was read from a thread-local variable on every noise sample; on Windows (MinGW) this read cost 14 ns and kept the computation from scaling across cores. An atomic counter avoids it when no planet is being created.
+- The noise computes its 8 corners only once and has a variant without derivatives; province fields share the cube projection; a vertex's colors share a single site computation.
+- Gully slope is interpolated on a fixed 175 m grid (mean deviation of 0.8° from the exact slope) and cached across chunks.
+- River index, city plans, flooded roads and highways are computed in parallel (`par_map`); generation threads run at low priority so they don't steal frames from rendering.
+- The quadtree is only reselected if the camera moved or new chunks arrived.
+- Objects are only drawn in the shadow cascades they touch; the far cascade uses the parent level-of-detail geometry; water only computes the sky when the screen-space reflection is missing.
+- Tree and grass instances (over 100,000 per frame) are prepared on several threads and written straight into the GPU buffer; chunk tables use FxHash.
 
-Mesures apres la nouvelle tectonique, les nouvelles rivieres et la meteo (`gen_bench 3`, meme machine) :
-creation de la planete 8,5 s (eau et climat 3,4 s, villes 4,3 s dont routes de montagne 2,1 s),
-chunk moyen 19,8 ms sur 130 chunks (de 15 a 24 ms). En jeu, la pluie fait passer de 136 a 98 images par
-seconde environ, la neige a 88 : les traits et les flocons sont dessines en plein ecran.
-Survol d'une foret de feuillus a 40 m/s (1080p, sans vsync, avec les nouveaux arbres) : image mediane 7,7 ms,
-99e centile 22,5 ms ; GPU 2,9 ms dont ombres 0,55 et scene 1,5 ; preparation des instances 2,6 ms sur le processeur.
-Un arbre proche compte de 600 a 3 300 triangles, sa version lointaine moins de 90, la plus legere moins de 45.
+Measurements after the new tectonics, the new rivers and the weather (`gen_bench 3`, same machine):
+planet creation 8.5 s (water and climate 3.4 s, cities 4.3 s including mountain roads 2.1 s),
+average chunk 19.8 ms over 130 chunks (15 to 24 ms). In game, rain takes the frame rate from 136 to about 98
+frames per second, snow to 88: streaks and flakes are drawn full screen.
+Flyover of a broadleaf forest at 40 m/s (1080p, no vsync, with the new trees): median frame 7.7 ms,
+99th percentile 22.5 ms; GPU 2.9 ms including shadows 0.55 and scene 1.5; instance preparation 2.6 ms on the CPU.
+A nearby tree has 600 to 3,300 triangles, its far version fewer than 90, the lightest fewer than 45.
 
 ## Tests
 
@@ -267,32 +267,32 @@ Un arbre proche compte de 600 a 3 300 triangles, sa version lointaine moins de 9
 .\cargo.ps1 test --lib
 ```
 
-## Limites actuelles
+## Current limitations
 
-- Les voitures garees et les lampadaires sont de simples volumes ; seule la voiture conduite est detaillee.
-- Les phares ne projettent pas de lumiere sur la route. Les vitres sont opaques de l'exterieur.
-- La voiture n'est pas deformable comme dans BeamNG (pas de poutres ni de noeuds) : la caisse reste rigide, seules des bosses s'affichent, et les degats ne changent pas la conduite. Pas d'usure ni d'echauffement des pneus. La direction au clavier est progressive mais moins fine qu'un volant. Il n'y a pas de circulation.
-- Routes de montagne : en cul-de-sac (pas de route de col qui redescende de l'autre cote) ; pas de tunnels ni de ponts, donc une route s'arrete avant une falaise ou une riviere, et une route qui en croiserait une autre est abandonnee. Les reliefs de la planete restent moderes : de 150 a 1 000 m de denivele. Le calcul ajoute environ 2,1 s a la creation de la planete.
-- Circuits : pas d'adversaires ni de chronometre. La route d'acces est une ligne droite. Une ville sans terrain plat libre autour d'elle n'a pas de circuit, et un meme trace peut revenir. Le detail des facades s'efface avec la distance.
-- Les rampes des ponts peuvent faire une marche aux carrefours, et les batiments s'enfoncent un peu sur les pentes.
-- Les autoroutes partent du bord des villes, dans le prolongement d'une avenue : pas d'echangeurs ni de bretelles.
-  Deux autoroutes qui se croisent passent l'une au-dessus de l'autre, sans se raccorder.
-- Les iles et continents separes par une mer profonde (plus de 100 m) restent sans liaison : il peut y avoir plusieurs reseaux.
-- Avec des autoroutes, une planete se genere plus lentement : environ 10 s pour 140 villes, 18 s pour 400.
-- Les panneaux d'autoroute n'ont pas de texte. Certains hameaux de faubourg n'ont pas de rue d'acces.
-- Pas de circulation ni d'habitants. Vue de loin la nuit, la ville parait un peu pale.
-- Une rue qui s'avance sur l'eau est retiree, mais quelques passerelles restent dans les lagunes.
-- Pas de grottes ni de surplombs : le terrain est un champ de hauteur. Les falaises des canyons et des tours sont des pentes tres raides.
-- Les ravines restent une illusion locale : elles ne rejoignent pas toujours les rivieres simulees.
-- Pas de cascades ni de deltas : un fort denivele donne des rapides, et les rivieres arrivent a la mer par un seul lit (evase en estuaire). Vus de haut, les meandres restent un peu anguleux a l'echelle de 3 km.
-- Tunnels : le trace des autoroutes ne les prevoit pas (il contourne toujours le relief comme avant), ils sont seulement creuses la ou le trace franchit une crete. Il reste des rampes raides par endroits (128 km a plus de 10 % sur 17 500 km), et la tranchee pres d'une tete est grossiere vue de tres loin.
-- Tous les lacs debordent : pas de lacs sales sans exutoire dans les deserts.
-- Le reseau de rivieres s'arrete aux bassins d'environ 550 (en montagne) a 1 500 km2 : plus petit, il n'y a pas de ruisseau, seulement des vallons secs.
-- Les lacs couvrent 0,4 % des terres, contre environ 3 % sur Terre. Le climat mediterraneen reste rare (0,7 % des terres), donc ses especes aussi.
-- Saisons : la neige au sol suit le climat du mois, pas les chutes passees. Vue de loin, la part de feuillus d'une foret est estimee (environ la moitie), pas tiree des arbres places. La pluie n'est masquee que par la profondeur de l'image (pas d'abri sous un pont vu de loin), et le rideau de pluie a l'horizon reste leger.
-- Pas de PNJ, de sauvegarde ni de chargement de modeles 3D.
-- Un jeu ne peut pas encore ajouter ses propres objets a la scene.
-- La physique se limite au sol, aux troncs et aux rochers. Il n'y a pas de gravite orbitale : le vol est libre.
-- Les nuages n'ont pas de filtrage temporel : ils gardent un leger grain de pres.
-- Le reflet ne montre que ce qui est a l'ecran ; le reste vient du ciel calcule, sans nuages.
-- Les feuilles sont dessinees au pixel sur des volumes, pas une a une : de tres pres, un houppier reste un peu massif. Au-dela de 900 m, un arbre n'est plus qu'une silhouette sans tronc.
+- Parked cars and street lights are simple volumes; only the driven car is detailed.
+- Headlights don't cast light on the road. Windows are opaque from the outside.
+- The car is not deformable like in BeamNG (no beams or nodes): the body stays rigid, only dents are shown, and damage doesn't affect handling. No tire wear or heating. Keyboard steering is progressive but less precise than a wheel. There is no traffic.
+- Mountain roads: dead ends (no pass road going down the other side); no tunnels or bridges, so a road stops before a cliff or river, and a road that would cross another is abandoned. The planet's relief stays moderate: 150 to 1,000 m of elevation gain. The computation adds about 2.1 s to planet creation.
+- Circuits: no opponents or timer. The access road is a straight line. A city with no free flat land around it has no circuit, and the same layout can appear more than once. Facade detail fades with distance.
+- Bridge ramps can leave a step at intersections, and buildings sink a little into slopes.
+- Highways start from the edge of cities, in line with an avenue: no interchanges or ramps.
+  Two crossing highways pass over each other without connecting.
+- Islands and continents separated by deep sea (over 100 m) stay unconnected: there can be several networks.
+- With highways, a planet generates more slowly: about 10 s for 140 cities, 18 s for 400.
+- Highway signs have no text. Some suburban hamlets have no access street.
+- No traffic or inhabitants. Seen from afar at night, the city looks a bit pale.
+- A street extending over water is removed, but a few footbridges remain in lagoons.
+- No caves or overhangs: the terrain is a height field. Canyon and tower cliffs are very steep slopes.
+- Gullies remain a local illusion: they don't always join the simulated rivers.
+- No waterfalls or deltas: a steep drop gives rapids, and rivers reach the sea through a single channel (widened into an estuary). Seen from above, meanders stay a little angular at the 3 km scale.
+- Tunnels: highway routing doesn't plan for them (it still avoids relief as before); they are only dug where the route crosses a ridge. Some steep ramps remain (128 km over 10% out of 17,500 km), and the cut near a portal is coarse when seen from very far away.
+- All lakes overflow: no endorheic salt lakes in deserts.
+- The river network stops at basins of about 550 (in mountains) to 1,500 km²: below that, there are no streams, only dry valleys.
+- Lakes cover 0.4% of the land, against about 3% on Earth. The Mediterranean climate stays rare (0.7% of the land), and so do its species.
+- Seasons: snow on the ground follows the month's climate, not past snowfall. From afar, the share of broadleaves in a forest is estimated (about half), not taken from the placed trees. Rain is only masked by image depth (no shelter under a bridge seen from afar), and the rain curtain on the horizon stays light.
+- No NPCs, saving, or 3D model loading.
+- A game cannot yet add its own objects to the scene.
+- Physics is limited to the ground, trunks and rocks. There is no orbital gravity: flight is free.
+- Clouds have no temporal filtering: they keep a slight grain up close.
+- Reflections only show what is on screen; the rest comes from the computed sky, without clouds.
+- Leaves are drawn per pixel on volumes, not one by one: very close up, a crown still looks a little solid. Beyond 900 m, a tree is only a silhouette without a trunk.
