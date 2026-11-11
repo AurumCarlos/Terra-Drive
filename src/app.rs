@@ -34,7 +34,17 @@ pub struct EngineConfig {
     pub start_with_menu: bool,
     /// Son actif au demarrage (M le coupe et le remet).
     pub sound: bool,
+    /// Ou le jeu posera la camera sur une nouvelle planete (direction, cap), selon le ciel et l'altitude
+    /// de la camera au moment de la demande ; `None` si elle reste ou elle est. Calcule en arriere-plan,
+    /// avec le paysage autour, pendant qu'on joue encore sur l'ancienne planete.
+    pub landing: Option<Landing>,
 }
+
+/// Choix du point d'arrivee sur une planete : voir [`EngineConfig::landing`].
+pub type Landing = fn(&Generator, &Sky, f64) -> Option<(DVec3, f32)>;
+
+/// Hauteur des yeux au-dessus du sol a l'arrivee.
+pub const EYE_HEIGHT: f64 = 1.75;
 
 impl Default for EngineConfig {
     fn default() -> Self {
@@ -48,6 +58,7 @@ impl Default for EngineConfig {
             auto_screenshot: None,
             start_with_menu: false,
             sound: true,
+            landing: None,
         }
     }
 }
@@ -111,7 +122,7 @@ struct State {
     events: Vec<GameEvent>,
     regenerate: Option<PlanetParams>,
     /// Planete en cours de simulation : l'ancienne reste affichee en attendant.
-    pending: Option<(PlanetParams, Instant, Receiver<Generator>)>,
+    pending: Option<(PlanetParams, Instant, Receiver<Prepared>)>,
     last_frame: Instant,
     started: Instant,
     frames: u64,
@@ -130,6 +141,16 @@ struct State {
     ambience_timer: f32,
     last_camera: DVec3,
     camera_speed: f32,
+    /// Voir [`EngineConfig::landing`].
+    config_landing: Option<Landing>,
+}
+
+/// Une planete simulee en arriere-plan, avec le paysage du point d'arrivee s'il y en a un.
+struct Prepared {
+    generator: Arc<Generator>,
+    warm: Option<(Streamer, crate::world::streaming::StreamUpdate)>,
+    weather: Vec<Vec<u8>>,
+    maps: [egui::ColorImage; 2],
 }
 
 /// Temps moyen des phases d'une image, affiche toutes les 5 s.
@@ -278,6 +299,7 @@ impl<G: Game> ApplicationHandler for App<G> {
             ambience_timer: 1.0,
             last_camera: DVec3::ZERO,
             camera_speed: 0.0,
+            config_landing: self.config.landing,
         };
         if state.audio.is_none() {
             println!("son : aucune sortie audio, le jeu reste muet");
@@ -456,26 +478,41 @@ impl State {
     fn request_planet(&mut self, params: PlanetParams) {
         let params = params.sanitized();
         let (send, receive) = channel();
+        let (sky, landing, stream) = (self.sky.probe(), self.config_landing, self.streamer.config);
+        let altitude = self.camera.position.length() - crate::world::generator::planet_radius();
         std::thread::spawn(move || {
-            crate::world::generator::worker_thread(params.radius());
-            let _ = send.send(Generator::new(params));
+            let radius = params.radius();
+            crate::world::generator::worker_thread(radius);
+            let generator = Arc::new(Generator::new(params));
+            let weather = Renderer::weather_texels(|dir| crate::weather::encode_climate(&generator, dir));
+            let maps = ui::planet_maps(&generator);
+            // Le point d'arrivee et le paysage autour se preparent ici : a l'echange, tout est pret.
+            let warm = landing.and_then(|f| f(&generator, &sky, altitude)).map(|(dir, yaw)| {
+                let _ = generator.landing.set((dir, yaw));
+                let eye = dir * (radius + generator.height(dir).max(0.0) as f64 + EYE_HEIGHT);
+                let mut streamer = Streamer::new(generator.clone(), stream);
+                let chunks = streamer.prewarm(eye, std::time::Duration::from_secs(8));
+                (streamer, chunks)
+            });
+            let _ = send.send(Prepared { generator, warm, weather, maps });
         });
         self.pending = Some((params, Instant::now(), receive));
         self.menu.sync(params);
     }
 
-    fn receive_planet(&mut self) {
-        let Some((params, started, receiver)) = &self.pending else { return };
-        let generator = match receiver.try_recv() {
-            Ok(generator) => generator,
-            Err(TryRecvError::Empty) => return,
+    /// Vrai si la planete vient d'etre remplacee.
+    fn receive_planet(&mut self) -> bool {
+        let Some((params, started, receiver)) = &self.pending else { return false };
+        let prepared = match receiver.try_recv() {
+            Ok(prepared) => prepared,
+            Err(TryRecvError::Empty) => return false,
             // Le thread de simulation s'est arrete sans rien rendre (panique) : on garde la planete
             // actuelle, et le menu redevient disponible au lieu d'attendre indefiniment.
             Err(TryRecvError::Disconnected) => {
                 eprintln!("la creation de la planete (graine {}) a echoue : planete actuelle conservee", params.seed);
                 self.pending = None;
                 self.menu.sync(self.generator.params);
-                return;
+                return false;
             }
         };
         let (params, seconds) = (*params, started.elapsed().as_secs_f32());
@@ -483,16 +520,24 @@ impl State {
         // L'ancienne generation s'arrete ici : ses threads finissent leur tache puis sortent.
         // La distance de rendu choisie dans le menu se conserve d'une planete a l'autre.
         let stream = self.streamer.config;
+        let Prepared { generator, warm, weather, maps } = prepared;
         crate::world::generator::set_planet_radius(generator.params.radius());
-        self.generator = Arc::new(generator);
-        self.streamer = Streamer::new(self.generator.clone(), stream);
+        self.generator = generator;
         self.renderer.clear_world();
-        let weather = self.generator.clone();
-        self.renderer.set_weather(|dir| crate::weather::encode_climate(&weather, dir));
-        self.menu.set_map(ui::planet_maps(&self.generator));
+        match warm {
+            // Le paysage du point d'arrivee est deja calcule : il part au GPU d'un coup.
+            Some((streamer, chunks)) => {
+                self.streamer = streamer;
+                self.renderer.sync_chunks(chunks);
+            }
+            None => self.streamer = Streamer::new(self.generator.clone(), stream),
+        }
+        self.renderer.set_weather_texels(&weather);
+        self.menu.set_map(maps);
         self.events.push(GameEvent::PlanetChanged);
         self.idle_frames = 0;
         println!("nouvelle planete : graine {} en {seconds:.2} s", params.seed);
+        true
     }
 
     /// Interface de l'image : decrit le menu et le tessele pour le GPU.
@@ -553,9 +598,10 @@ impl State {
         }
 
         lap(0, &mut times);
-        self.receive_planet();
+        // A l'echange, la camera est encore a l'ancienne place : le jeu la deplace a l'image suivante.
+        let swapped = self.receive_planet();
         self.hud.generating = self.pending.is_some();
-        let update = self.streamer.update(self.camera.position);
+        let update = if swapped { Default::default() } else { self.streamer.update(self.camera.position) };
         lap(1, &mut times);
         self.renderer.sync_chunks(update);
         lap(2, &mut times);

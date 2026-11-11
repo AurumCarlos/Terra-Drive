@@ -341,6 +341,9 @@ pub struct Generator {
     moisture: Noise,
     patches: Noise,
     groves: Noise,
+    /// Point d'arrivee (direction, cap) choisi pendant la creation de la planete, en arriere-plan :
+    /// le jeu s'y pose sans refaire la recherche, et les chunks autour sont deja prets.
+    pub landing: std::sync::OnceLock<(DVec3, f32)>,
 }
 
 /// Provinces, teinte et roche d'un point : voir `Generator::site`.
@@ -502,6 +505,7 @@ impl Generator {
             moisture,
             patches: layer(10),
             groves: layer(26),
+            landing: std::sync::OnceLock::new(),
         };
         gen.cities = Cities::place(&gen);
         step("villes");

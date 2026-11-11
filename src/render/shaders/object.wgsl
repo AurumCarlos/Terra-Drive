@@ -6,6 +6,7 @@ struct VsIn {
     @location(4) scale: f32,
     @location(5) yaw: f32,
     @location(6) tint: vec4f,  // a = 0 pour les herbes
+    @location(7) uv: vec4f,    // cartes de feuilles : u, v, 1 pour une carte, graine du motif
 };
 
 struct VsOut {
@@ -18,6 +19,7 @@ struct VsOut {
     @location(5) herb: f32,
     @location(6) local: vec3f,
     @location(7) bare: f32,
+    @location(8) card: vec4f,
 };
 
 @vertex
@@ -61,6 +63,7 @@ fn vs(v: VsIn) -> VsOut {
     o.herb = 1.0 - v.tint.a;
     // Chaque arbre a son propre decalage dans le bruit, sinon tous auraient les memes feuilles.
     o.local = v.pos + vec3f(v.yaw * 7.0, v.scale * 13.0, v.yaw * 3.0);
+    o.card = vec4f(v.uv.xy, v.uv.z, fract(v.uv.w * 3.71 + v.yaw * 0.13));
     return o;
 }
 
@@ -75,7 +78,26 @@ fn fs(i: VsOut) -> @location(0) vec4f {
     // Feuillage : paquets de feuilles sombres et clairs, bords ajoures. S'efface au loin.
     let dist = length(i.rel);
     let near_leaf = i.leafy * (1.0 - i.herb) * (1.0 - smoothstep(120.0, 240.0, dist));
-    if near_leaf > 0.0 {
+    if i.card.z > 0.5 {
+        // Carte de feuilles : des feuilles arrondies (cellules de Worley, une dizaine de centimetres),
+        // plus rares vers le bord de la carte, pour qu'aucun bord droit ne se voie.
+        let c = i.card.xy * 2.0 - 1.0;
+        let q = vec3f(i.card.xy * 1.2, i.card.w * 9.0);
+        let leaf = textureSample(noise3, noise_sampler, q).b;
+        let sprig = textureSample(noise3, noise_sampler, q * 0.35 + vec3f(0.5)).g;
+        // Bord rond et dechiquete : la carte ne laisse jamais voir ses cotes droits.
+        let alpha = leaf * 0.8 + sprig * 0.35 - smoothstep(0.25, 1.0, dot(c, c)) * 0.8;
+        // L'hiver, les feuilles tombent : il ne reste que les rameaux, dessines a part.
+        if alpha < 0.55 + i.bare * 2.0 {
+            discard;
+        }
+        // Chaque feuille a sa teinte et son relief : le centre plus clair, le bord dans l'ombre.
+        let vein = smoothstep(0.55, 0.9, alpha);
+        color *= mix(0.62, 1.25, vein) * (0.85 + 0.3 * sprig);
+        color *= mix(vec3f(1.12, 1.0, 0.75), vec3f(0.88, 1.04, 1.0), leaf);
+        let tilt = textureSample(noise3, noise_sampler, q * 2.0 + vec3f(0.3)).rgb - 0.5;
+        n = normalize(n + object_axes() * tilt * 0.6);
+    } else if near_leaf > 0.0 {
         // Trois echelles : bouquets de rameaux, grappes de feuilles, feuilles.
         let leaves = textureSample(noise3, noise_sampler, i.local / 3.2);
         let fine = textureSample(noise3, noise_sampler, i.local / 0.9);

@@ -167,7 +167,9 @@ fn fxaa(i: VsOut) -> vec3f {
     var dir = vec2f(-((l_nw + l_ne) - (l_sw + l_se)), (l_nw + l_sw) - (l_ne + l_se));
     let reduce = max((l_nw + l_ne + l_sw + l_se) * 0.03, 1.0 / 128.0);
     let scale = 1.0 / (min(abs(dir.x), abs(dir.y)) + reduce);
-    dir = clamp(dir * scale, vec2f(-8.0), vec2f(8.0)) * px;
+    // Portee courte : sur un sol texture (gravier, herbe), une longue recherche voit des aretes partout et
+    // etale la texture en trainees floues. Quelques pixels suffisent aux aretes de la geometrie.
+    dir = clamp(dir * scale, vec2f(-2.5), vec2f(2.5)) * px;
 
     let a = 0.5 * (tonemapped(i.uv + dir * (1.0 / 3.0 - 0.5)) + tonemapped(i.uv + dir * (2.0 / 3.0 - 0.5)));
     let b = a * 0.5 + 0.25 * (tonemapped(i.uv - dir * 0.5) + tonemapped(i.uv + dir * 0.5));

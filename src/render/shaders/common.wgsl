@@ -12,6 +12,8 @@ struct Globals {
     misc: vec4f,        // temps, lod_factor, largeur, hauteur
     camera_km: vec4f,   // xyz position de la camera en km, w = decalage des nuages
     weather: vec4f,     // moment de l'annee (0 = mi-janvier), precipitations, part de neige, sol mouille
+    prev_view_proj: mat4x4f, // view_proj de l'image precedente (reprojection des nuages)
+    frame: vec4f,       // x = numero d'image (modulo 1024), y = 1 si l'historique est a oublier
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -262,7 +264,15 @@ fn cloud_shape(p: vec3f, cover: f32, lod: f32) -> f32 {
     if h <= 0.0 || h >= 1.0 {
         return 0.0;
     }
-    let top = 0.22 + 0.78 * cover * cover;
+    // Cellules de cumulus : une colonne par cellule de Worley (environ 2 km), lue sur la sphere de base
+    // pour rester verticale, plus haute en son centre. Sous la pluie, le ciel se ferme en couche.
+    let base_p = normalize(p) * (planet_km() + CLOUD_BASE) + cloud_offset();
+    let small = textureSampleLevel(noise3, noise_sampler, base_p / CLOUD_TILE + vec3f(0.31, 0.17, 0.57), lod).g;
+    let large = textureSampleLevel(noise3, noise_sampler, base_p / (CLOUD_TILE * 2.2) + vec3f(0.73, 0.41, 0.09), max(lod - 1.0, 0.0)).g;
+    let cell = max(small * 0.92, large);
+    let column = smoothstep(0.36, 0.74, cell);
+    let organized = 1.0 - 0.8 * smoothstep(0.85, 1.0, cover) * g.weather.y;
+    let top = (0.22 + 0.78 * cover * cover) * mix(1.0, mix(0.3, 1.0, column), organized);
     let profile = smoothstep(0.0, 0.05, h) * (1.0 - smoothstep(top * 0.45, top, h));
     if profile <= 0.0 {
         return 0.0;
@@ -271,7 +281,8 @@ fn cloud_shape(p: vec3f, cover: f32, lod: f32) -> f32 {
     let s = textureSampleLevel(noise3, noise_sampler, q / CLOUD_TILE, lod).r;
     // Meme sous un grand banc, il reste des trouees : des cumulus distincts plutot qu'une nappe.
     let threshold = 1.0 - min(cover, 0.8) * 0.62 * profile;
-    return clamp((s - threshold) / max(1.0 - threshold, 0.05) * 1.8, 0.0, 1.0);
+    let d = clamp((s - threshold) / max(1.0 - threshold, 0.05) * 1.8, 0.0, 1.0);
+    return d * mix(1.0, column, organized);
 }
 
 // Les bords se rongent en volutes, inutile a grande distance.

@@ -105,8 +105,10 @@ fn fs_march(i: VsOut) -> @location(0) vec4f {
     if t1 > t0 {
         let span = t1 - t0;
         let n = mix(GRAZING_STEPS, NEAR_STEPS, smoothstep(0.0, 0.5, abs(dot(dir, camera_up))));
-        // Un bruit sans structure : un motif regulier ressortirait en moire sur les grands nuages.
-        let jitter = hash3(vec3f(i.clip.xy, 7.0));
+        // Bruit a gradient entrelace (bruit bleu), decale a chaque image : la resolution temporelle
+        // moyenne les pas de la marche au lieu de figer un grain a l'ecran.
+        let ign = fract(52.9829189 * fract(dot(i.clip.xy, vec2f(0.06711056, 0.00583715))));
+        let jitter = fract(ign + f32(u32(g.frame.x) % 64u) * 0.618034);
         let pixel_size = 2.0 / g.misc.w;
         var k = 0.0;
         loop {
@@ -189,6 +191,45 @@ fn fs_march(i: VsOut) -> @location(0) vec4f {
 
 @group(1) @binding(0) var clouds_tex: texture_2d<f32>;
 @group(1) @binding(1) var clouds_sampler: sampler;
+
+@group(2) @binding(0) var history_tex: texture_2d<f32>;
+@group(2) @binding(1) var history_sampler: sampler;
+
+// Resolution temporelle : l'image precedente, reprojetee par direction (les nuages sont loin), se melange a
+// la marche de cette image. Elle est bornee par le voisinage actuel pour ne pas laisser de trainees.
+@fragment
+fn fs_resolve(i: VsOut) -> @location(0) vec4f {
+    let size = vec2i(textureDimensions(clouds_tex));
+    let pixel = clamp(vec2i(i.clip.xy), vec2i(0), size - 1);
+    let current = textureLoad(clouds_tex, pixel, 0);
+    var mean = vec4f(0.0);
+    var square = vec4f(0.0);
+    for (var dy = -1; dy <= 1; dy++) {
+        for (var dx = -1; dx <= 1; dx++) {
+            let c = textureLoad(clouds_tex, clamp(pixel + vec2i(dx, dy), vec2i(0), size - 1), 0);
+            mean += c;
+            square += c * c;
+        }
+    }
+    mean /= 9.0;
+    let sigma = sqrt(max(square / 9.0 - mean * mean, vec4f(0.0)));
+    let lo = min(current, mean - sigma * 1.25);
+    let hi = max(current, mean + sigma * 1.25);
+
+    let h = g.inv_view_proj * vec4f(i.ndc, 1.0, 1.0);
+    let dir = normalize(h.xyz / h.w);
+    let prev = g.prev_view_proj * vec4f(dir, 0.0);
+    var fresh = 1.0;
+    var history = current;
+    if prev.w > 1e-6 && g.frame.y < 0.5 {
+        let uv = (prev.xy / prev.w) * vec2f(0.5, -0.5) + 0.5;
+        if all(uv >= vec2f(0.0)) && all(uv <= vec2f(1.0)) {
+            history = clamp(textureSampleLevel(history_tex, history_sampler, uv, 0.0), lo, hi);
+            fresh = 0.1;
+        }
+    }
+    return mix(history, current, fresh);
+}
 
 // Composition : un petit filtre gomme le grain de la marche de rayons.
 @fragment

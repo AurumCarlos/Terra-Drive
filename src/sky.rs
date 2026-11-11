@@ -44,7 +44,8 @@ impl Sky {
     }
 
     /// Le meme soleil, sans la meteo : pour chercher une heure sans toucher au ciel.
-    fn probe(&self) -> Sky {
+    /// Copie de la position du soleil, sans la meteo : de quoi calculer un soleil sur un autre thread.
+    pub fn probe(&self) -> Sky {
         Sky {
             sun_longitude: self.sun_longitude,
             declination: self.declination,

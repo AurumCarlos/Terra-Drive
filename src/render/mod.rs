@@ -126,6 +126,10 @@ struct Globals {
     camera_km: Vec4,
     /// Moment de l'annee, precipitations, part de neige, sol mouille.
     weather: Vec4,
+    /// `view_proj` de l'image precedente : reprojection des nuages.
+    prev_view_proj: Mat4,
+    /// Numero d'image (modulo 1024), et 1 quand l'historique des nuages est a oublier.
+    frame: Vec4,
 }
 
 #[repr(C)]
@@ -175,6 +179,9 @@ struct SizedTargets {
     scene_copy_view: wgpu::TextureView,
     clouds_view: wgpu::TextureView,
     clouds_group: wgpu::BindGroup,
+    /// Nuages filtres dans le temps, en alternance : l'une est lue (image precedente), l'autre ecrite.
+    clouds_history_views: [wgpu::TextureView; 2],
+    clouds_history_groups: [wgpu::BindGroup; 2],
     bloom_views: Vec<wgpu::TextureView>,
     /// `bloom_down[i]` lit le niveau au-dessus du niveau i, `bloom_up[i]` le niveau en dessous.
     bloom_down: Vec<wgpu::BindGroup>,
@@ -271,6 +278,12 @@ pub struct Renderer {
     car_indices: wgpu::Buffer,
 
     ui_renderer: egui_wgpu::Renderer,
+
+    clouds_resolve_pipeline: wgpu::RenderPipeline,
+    /// Pour la resolution temporelle des nuages : camera et matrice de l'image precedente, numero d'image.
+    prev_view_proj: Mat4,
+    prev_camera: DVec3,
+    frame_index: u64,
 }
 
 fn wrap(v: f64) -> f32 {
@@ -509,6 +522,9 @@ impl Renderer {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             mipmap_filter: wgpu::FilterMode::Linear,
+            // Le sol se voit presque a plat : sans filtrage anisotrope, le mip choisi pour la profondeur
+            // floute aussi la largeur, et le sol pres des pieds parait lisse et flou.
+            anisotropy_clamp: 16,
             ..Default::default()
         });
         // Climat de la planete, sur les six faces d'un cube : nebulosite (r), temperature moyenne (g), ecart
@@ -756,7 +772,7 @@ impl Renderer {
                 attributes: &chunk_attrs,
             },
         ];
-        let object_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Unorm8x4];
+        let object_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Unorm8x4, 7 => Unorm8x4];
         let instance_attrs = wgpu::vertex_attr_array![3 => Float32x3, 4 => Float32, 5 => Float32, 6 => Unorm8x4];
         let object_buffers = [
             wgpu::VertexBufferLayout {
@@ -879,6 +895,17 @@ impl Renderer {
             sm: &clouds_sm,
             vs: "vs",
             fs: Some("fs_march"),
+            buffers: &[],
+            depth: None,
+            target: hdr_target(None),
+        });
+        let resolve_layout = layout(&[&globals_layout, &sized_layouts.texture, &sized_layouts.texture]);
+        let clouds_resolve_pipeline = make(Desc {
+            label: "clouds resolve",
+            layout: &resolve_layout,
+            sm: &clouds_sm,
+            vs: "vs",
+            fs: Some("fs_resolve"),
             buffers: &[],
             depth: None,
             target: hdr_target(None),
@@ -1075,6 +1102,10 @@ impl Renderer {
             car_vertices,
             car_indices,
             ui_renderer,
+            clouds_resolve_pipeline,
+            prev_view_proj: Mat4::IDENTITY,
+            prev_camera: DVec3::ZERO,
+            frame_index: 0,
         })
     }
 
@@ -1128,6 +1159,9 @@ impl Renderer {
             })
         };
         let clouds_group = sampled(&clouds_view);
+        let clouds_history_views =
+            [0, 1].map(|_| texture("clouds history", HDR_FORMAT, usage, w / 2, h / 2, 1).create_view(&Default::default()));
+        let clouds_history_groups = [sampled(&clouds_history_views[0]), sampled(&clouds_history_views[1])];
         let bloom_down: Vec<_> =
             (0..levels as usize).map(|i| sampled(if i == 0 { &hdr_view } else { &bloom_views[i - 1] })).collect();
         let bloom_up: Vec<_> = (0..levels as usize - 1).map(|i| sampled(&bloom_views[i + 1])).collect();
@@ -1165,6 +1199,8 @@ impl Renderer {
             scene_copy_view,
             clouds_view,
             clouds_group,
+            clouds_history_views,
+            clouds_history_groups,
             bloom_views,
             bloom_down,
             bloom_up,
@@ -1200,7 +1236,13 @@ impl Renderer {
 
     /// La nebulosite de la planete : `at` rend la part de ciel couverte (0 a 1) dans une direction.
     pub fn set_weather(&mut self, at: impl Fn(glam::DVec3) -> [f32; 4]) {
+        self.set_weather_texels(&Self::weather_texels(at));
+    }
+
+    /// Les texels des six faces de la carte du temps : se calcule sur n'importe quel thread.
+    pub fn weather_texels(at: impl Fn(glam::DVec3) -> [f32; 4]) -> Vec<Vec<u8>> {
         let n = WEATHER_SIZE as usize;
+        let mut faces = Vec::with_capacity(6);
         for face in 0..6u32 {
             let mut data = vec![0u8; n * n * 4];
             for y in 0..n {
@@ -1221,6 +1263,15 @@ impl Renderer {
                     }
                 }
             }
+            faces.push(data);
+        }
+        faces
+    }
+
+    /// Envoie au GPU la carte du temps calculee par [`Renderer::weather_texels`].
+    pub fn set_weather_texels(&mut self, faces: &[Vec<u8>]) {
+        for (face, data) in faces.iter().enumerate() {
+            let face = face as u32;
             self.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: &self.weather_texture,
@@ -1228,7 +1279,7 @@ impl Renderer {
                     origin: wgpu::Origin3d { x: 0, y: 0, z: face },
                     aspect: wgpu::TextureAspect::All,
                 },
-                &data,
+                data,
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(WEATHER_SIZE * 4),
@@ -1474,7 +1525,19 @@ impl Renderer {
                 sky.weather.snow,
                 sky.weather.wet,
             ),
+            prev_view_proj: if self.frame_index == 0 { view_proj } else { self.prev_view_proj },
+            // Teleportation, ou premiere image : l'historique des nuages ne vaut plus rien.
+            frame: Vec4::new(
+                (self.frame_index % 1024) as f32,
+                if self.frame_index == 0 || (cam - self.prev_camera).length() > 2000.0 { 1.0 } else { 0.0 },
+                0.0,
+                0.0,
+            ),
         };
+        self.prev_view_proj = view_proj;
+        self.prev_camera = cam;
+        self.frame_index += 1;
+        let history = (self.frame_index % 2) as usize;
         self.queue.write_buffer(&self.globals_buffer, 0, bytemuck::bytes_of(&globals));
         for (buffer, m) in self.cascade_buffers.iter().zip(&cascades) {
             self.queue.write_buffer(buffer, 0, bytemuck::bytes_of(m));
@@ -1673,6 +1736,24 @@ impl Renderer {
                 pass.draw(0..3, 0..1);
             }
         }
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("clouds resolve"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.targets.clouds_history_views[history],
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.clouds_resolve_pipeline);
+            pass.set_bind_group(0, &self.globals_group, &[]);
+            pass.set_bind_group(1, &self.targets.clouds_group, &[]);
+            pass.set_bind_group(2, &self.targets.clouds_history_groups[1 - history], &[]);
+            pass.draw(0..3, 0..1);
+        }
 
         // L'eau reflete la scene et les nuages : on les compose dans une copie.
         encoder.copy_texture_to_texture(
@@ -1698,7 +1779,7 @@ impl Renderer {
             });
             pass.set_pipeline(&self.clouds_composite_pipeline);
             pass.set_bind_group(0, &self.globals_group, &[]);
-            pass.set_bind_group(1, &self.targets.clouds_group, &[]);
+            pass.set_bind_group(1, &self.targets.clouds_history_groups[history], &[]);
             pass.draw(0..3, 0..1);
         }
 
@@ -1736,7 +1817,7 @@ impl Renderer {
             }
 
             pass.set_pipeline(&self.clouds_composite_pipeline);
-            pass.set_bind_group(1, &self.targets.clouds_group, &[]);
+            pass.set_bind_group(1, &self.targets.clouds_history_groups[history], &[]);
             pass.draw(0..3, 0..1);
         }
 
@@ -1940,8 +2021,8 @@ mod tests {
 
     #[test]
     fn globals_size_matches_the_wgsl_struct() {
-        // 5 mat4 (2 + 3 cascades) + 8 vec4 : a garder aligne avec common.wgsl.
-        assert_eq!(std::mem::size_of::<Globals>(), 5 * 64 + 8 * 16);
+        // 6 mat4 (2 + 3 cascades + la precedente) + 9 vec4 : a garder aligne avec common.wgsl.
+        assert_eq!(std::mem::size_of::<Globals>(), 6 * 64 + 9 * 16);
     }
 
     #[test]

@@ -33,7 +33,7 @@ const MIN_RIVER_AREA: f32 = 1500.0;
 const MIN_MOUNTAIN_RIVER_AREA: f32 = 550.0;
 const MIN_LAKE_DEPTH: f32 = 9.0;
 /// Au-dela, la cuvette est comblee par les sediments : on evite les mers interieures a plat.
-const MAX_LAKE_CELLS: usize = 160;
+const MAX_LAKE_CELLS: usize = 700;
 
 /// Ecart maximal du trace des rivieres par les meandres, en metres.
 const MAX_WARP: f64 = 4_500.0;
@@ -445,12 +445,12 @@ impl Hydrology {
                 // et humides que les calottes ont rabotes (Canada, Scandinavie), et le pied des chaines.
                 // Dans les pays arides, l'eau s'evapore avant de remplir une cuvette.
                 let climate = climate_at(dir, value);
-                let humid = smoothstep(0.3, 0.75, climate.aridity());
-                let glaciated = smoothstep(6.0, -1.0, climate.mean) * smoothstep(-4.0, 6.0, climate.hot);
+                let humid = smoothstep(0.25, 0.7, climate.aridity());
+                let glaciated = smoothstep(10.0, 0.0, climate.mean) * smoothstep(-4.0, 6.0, climate.hot);
                 let o = orogeny.sample(dir).clamp(0.0, 1.4);
                 let piedmont = smoothstep(0.05, 0.2, o) * (1.0 - smoothstep(0.35, 0.7, o));
                 let lucky = chance.fbm(dir * 8.0, 3) * 1.5;
-                let likely = (glaciated * 0.85 + piedmont * 0.3 + lucky * 0.45).clamp(0.0, 1.0) * humid;
+                let likely = (glaciated * 1.0 + piedmont * 0.4 + lucky * 0.7).clamp(0.0, 1.0) * humid;
                 if likely <= 0.05 {
                     return value;
                 }
@@ -460,9 +460,9 @@ impl Hydrology {
                     pits.fbm(dir * 60.0 + DVec3::splat(11.0), 3) as f64,
                     pits.fbm(dir * 60.0 + DVec3::splat(19.0), 3) as f64,
                 ) * 0.006;
-                let spot = pits.fbm(bent * 330.0, 4);
-                let hollow = smoothstep(0.5 - 0.3 * likely, 0.58 - 0.26 * likely, spot);
-                (value - hollow * (22.0 + 110.0 * likely)).max(1.0)
+                let spot = pits.fbm(bent * 210.0, 4);
+                let hollow = smoothstep(0.38 - 0.36 * likely, 0.48 - 0.32 * likely, spot);
+                (value - hollow * (35.0 + 150.0 * likely)).max(1.0)
             })
         };
         step("grille fine");
@@ -481,17 +481,17 @@ impl Hydrology {
         step("routage");
         let (lake_of, lakes_found) =
             find_lakes(fine, &h3, &flow, &|c| {
-                // Hors des pays rabotes par les glaces, une cuvette est presque toujours comblee ou videe
-                // par sa riviere : seule une sur deux environ garde un lac.
+                // Hors des pays rabotes par les glaces, une cuvette est souvent comblee ou videe par sa
+                // riviere : dans un pays humide, un peu plus de la moitie garde un lac.
                 let dir = fine.center(c);
                 let climate = climate_at(dir, h3[c]);
-                let glaciated = climate.mean < 4.0 && climate.hot > -2.0;
+                let glaciated = climate.mean < 7.0 && climate.hot > -2.0;
                 let wet = climate.aridity();
                 // Au coeur des chaines, la grille ignore les cretes que le relief fin y dresse : un lac de
                 // 13 km y serait taille a l'emporte-piece dans la montagne. Les lacs de montagne sont
                 // les petits lacs poses par le relief fin, dans les fonds plats.
                 let mountains = orogeny.sample(dir) > 0.45;
-                !mountains && ((glaciated && wet > 0.3) || (wet > 0.55 && chance.fbm(dir * 8.0, 3) > -0.1))
+                !mountains && ((glaciated && wet > 0.3) || (wet > 0.45 && chance.fbm(dir * 8.0, 3) > -0.3))
             });
         step("lacs");
 

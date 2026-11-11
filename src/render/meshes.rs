@@ -15,6 +15,8 @@ pub struct ObjectVertex {
     pub normal: [f32; 3],
     /// rgb encode en racine carree, a = sensibilite au vent.
     pub color: [u8; 4],
+    /// Cartes de feuilles : u, v sur la carte, 255 pour une carte (0 sinon), graine du motif.
+    pub uv: [u8; 4],
 }
 
 #[derive(Default)]
@@ -36,7 +38,7 @@ impl Builder {
         for i in 0..3 {
             let mut color = encode_color(colors[i]);
             color[3] = (sway[i].clamp(0.0, 1.0) * 255.0) as u8;
-            self.verts.push(ObjectVertex { pos: p[i].to_array(), normal: n.to_array(), color });
+            self.verts.push(ObjectVertex { pos: p[i].to_array(), normal: n.to_array(), color, uv: [0; 4] });
         }
     }
 
@@ -45,7 +47,56 @@ impl Builder {
         for i in 0..3 {
             let mut color = encode_color(colors[i]);
             color[3] = (sway.clamp(0.0, 1.0) * 255.0) as u8;
-            self.verts.push(ObjectVertex { pos: p[i].to_array(), normal: n[i].to_array(), color });
+            self.verts.push(ObjectVertex { pos: p[i].to_array(), normal: n[i].to_array(), color, uv: [0; 4] });
+        }
+    }
+
+    /// Un paquet de feuillage isole (cypres, cedre, dragonnier) : des cartes de feuilles, dont le nombre suit
+    /// la taille du paquet, eclairees depuis son propre centre.
+    fn leafy(&mut self, c: Vec3, r: Vec3, seed: u64, color: [f32; 3], sway: f32) {
+        // Des cartes plus petites que le paquet, et d'autant plus nombreuses : un paquet haut et etroit
+        // (cypres) ne se lit plus comme quelques panneaux plats.
+        let span = r.x.max(r.z);
+        let count = (LEAF_CARDS as f32 * 2.2 * (r.y / span).clamp(0.6, 2.5)).round() as u32;
+        self.leaf_cards(c, r, (c, r), span * 0.5, count, seed, color, sway);
+    }
+
+    /// Un rameau feuillu : des cartes croisees dans le volume `r` autour de `p`, que le shader decoupe en
+    /// feuilles. Leurs normales s'ecartent du centre du houppier : le feuillage s'eclaire comme un tout,
+    /// sans les facettes d'un volume plein.
+    #[allow(clippy::too_many_arguments)]
+    fn leaf_cards(&mut self, p: Vec3, r: Vec3, crown: (Vec3, Vec3), half: f32, count: u32, seed: u64, color: [f32; 3], sway: f32) {
+        let mut rng = Rng(seed);
+        let (crown_c, crown_r) = crown;
+        let radial = |v: Vec3| ((v - crown_c) / crown_r).normalize_or(Vec3::Y);
+        let out = radial(p);
+        for k in 0..count {
+            let rand = Vec3::new(rng.range(-1.0, 1.0), rng.range(-1.0, 1.0), rng.range(-1.0, 1.0));
+            let normal = (out * 0.7 + rand.normalize_or(Vec3::X)).normalize_or(Vec3::Y);
+            let spin = rng.range(0.0, std::f32::consts::TAU);
+            let base = normal.any_orthonormal_vector();
+            let t = base * spin.cos() + normal.cross(base) * spin.sin();
+            let b = normal.cross(t);
+            let size = half * rng.range(0.6, 0.85);
+            let center = p + Vec3::new(rng.range(-0.5, 0.5) * r.x, rng.range(-0.45, 0.45) * r.y, rng.range(-0.5, 0.5) * r.z);
+            let corners = [center - t * size - b * size, center + t * size - b * size, center + t * size + b * size, center - t * size + b * size];
+            let uvs = [[0u8, 0], [255, 0], [255, 255], [0, 255]];
+            let tone = rng.range(0.82, 1.16);
+            let id = ((seed as u32).wrapping_mul(31).wrapping_add(k * 97) % 251) as u8;
+            let mut sway_byte = encode_color(color.map(|c| c * tone));
+            sway_byte[3] = (sway.clamp(0.0, 1.0) * 255.0) as u8;
+            for tri in [[0usize, 1, 2], [0, 2, 3]] {
+                for i in tri {
+                    let v = corners[i];
+                    let n = (radial(v) * 0.75 + normal * 0.25).normalize_or(Vec3::Y);
+                    self.verts.push(ObjectVertex {
+                        pos: v.to_array(),
+                        normal: n.to_array(),
+                        color: sway_byte,
+                        uv: [uvs[i][0], uvs[i][1], 255, id],
+                    });
+                }
+            }
         }
     }
 
@@ -220,6 +271,9 @@ const PINE: [f32; 3] = [0.024, 0.052, 0.032];
 const LEAF: [f32; 3] = [0.06, 0.105, 0.032];
 const BIRCH_LEAF: [f32; 3] = [0.115, 0.15, 0.042];
 
+/// Cartes de feuilles par paquet, au niveau de detail le plus proche.
+const LEAF_CARDS: u32 = 12;
+
 /// Vent presque nul au loin, mais assez pour etre traite comme du feuillage.
 const FAR_SWAY: f32 = 0.08;
 /// Sensibilite au vent des feuillages proches. Au-dessus de 1/8, le shader traite un sommet en feuille :
@@ -353,7 +407,9 @@ fn broadleaf(b: &mut Builder, lod: u8, t: &Broadleaf) {
             p.y -= t.droop * t.tuft * 0.7;
             let s = t.tuft * size * rng.range(0.75, 1.15);
             let color = t.shade(p, &mut rng);
-            b.blob(p, Vec3::new(s, s * t.flat, s), 1, 0.5, t.seed + 7 + b.verts.len() as u64, color, LEAF_SWAY);
+            // De pres, de vraies feuilles : des cartes decoupees, plutot qu'un volume bossele.
+            let seed = t.seed + 7 + b.verts.len() as u64;
+            b.leaf_cards(p, Vec3::new(s, s * t.flat, s), (c, r), s, LEAF_CARDS, seed, color, LEAF_SWAY);
         }
     }
     for k in 0..t.fill {
@@ -361,7 +417,7 @@ fn broadleaf(b: &mut Builder, lod: u8, t: &Broadleaf) {
         let p = t.surface(0.6 + 0.4 * k as f32, a, 0.45);
         let s = t.tuft * 1.3;
         let color = t.shade(p, &mut rng).map(|v| v * 0.85);
-        b.blob(p, Vec3::new(s, s * t.flat, s), 1, 0.45, t.seed + 900 + k as u64, color, LEAF_SWAY);
+        b.leaf_cards(p, Vec3::new(s, s * t.flat, s), (c, r), s, LEAF_CARDS + 4, t.seed + 900 + k as u64, color, LEAF_SWAY);
     }
 }
 
@@ -719,12 +775,24 @@ fn willow(b: &mut Builder, lod: u8) {
         let length = rng.range(3.5, top.y - 1.0);
         let mid = top + dir * 0.4 - Vec3::Y * length * 0.5;
         let bottom = top + dir * rng.range(0.5, 1.1) - Vec3::Y * length;
-        let (w0, w1, w2) = (side * 0.35, side * 0.28, side * 0.12);
-        let shade = color.map(|c| c * rng.range(0.85, 1.25));
-        let low = shade.map(|c| c * 0.8);
-        for (p, q, wp, wq, cp, cq) in [(top, mid, w0, w1, shade, shade), (mid, bottom, w1, w2, shade, low)] {
-            b.smooth_tri([p - wp, p + wp, q + wq], [dir; 3], [cp, cp, cq], 0.6);
-            b.smooth_tri([p - wp, q + wq, q - wq], [dir; 3], [cp, cq, cq], 0.6);
+        // Une laniere est une carte de feuilles etiree : le shader la decoupe en feuilles fines qui
+        // pendent, au lieu d'un ruban plein.
+        let (w0, w1, w2) = (side * 0.7, side * 0.6, side * 0.35);
+        let shade = encode_color(color.map(|c| c * rng.range(0.85, 1.25)));
+        let low = encode_color(color.map(|c| c * rng.range(0.85, 1.25) * 0.8));
+        let id = (i * 37 % 251) as u8;
+        let rows = [(top, w0, 0u8, shade), (mid, w1, 128, shade), (bottom, w2, 255, low)];
+        for seg in rows.windows(2) {
+            let [(p, wp, vp, cp), (q, wq, vq, cq)] = [seg[0], seg[1]];
+            let quad = [(p - wp, 0u8, vp, cp), (p + wp, 255, vp, cp), (q + wq, 255, vq, cq), (q - wq, 0, vq, cq)];
+            for tri in [[0usize, 1, 2], [0, 2, 3]] {
+                for k in tri {
+                    let (v, u, w, mut c) = quad[k];
+                    c[3] = (0.6 * 255.0) as u8;
+                    let n = (dir * 0.8 + Vec3::Y * 0.3).normalize();
+                    b.verts.push(ObjectVertex { pos: v.to_array(), normal: n.to_array(), color: c, uv: [u, w, 255, id] });
+                }
+            }
         }
     }
 }
@@ -799,10 +867,10 @@ fn sequoia(b: &mut Builder, lod: u8) {
             let s = rng.range(1.8, 2.6) * (1.0 - 0.4 * k);
             let p = Vec3::Y * y + out * r * 0.75;
             let tone = (0.7 + 0.5 * k) * rng.range(0.85, 1.15);
-            b.blob(p, Vec3::new(s * 1.2, s * 0.65, s * 1.2), 1, 0.5, 182 + (i * 3 + j) as u64, color.map(|c| c * tone), LEAF_SWAY);
+            b.leafy(p, Vec3::new(s * 1.2, s * 0.65, s * 1.2), 182 + (i * 3 + j) as u64, color.map(|c| c * tone), LEAF_SWAY);
         }
     }
-    b.blob(Vec3::Y * (height - 1.5), Vec3::new(1.3, 2.4, 1.3), 1, 0.4, 199, color.map(|c| c * 1.2), LEAF_SWAY);
+    b.leafy(Vec3::Y * (height - 1.5), Vec3::new(1.3, 2.4, 1.3), 199, color.map(|c| c * 1.2), LEAF_SWAY);
 }
 
 /// Cedre : des etages de branches horizontales qui portent des plateaux de feuillage, le sommet aplati.
@@ -835,7 +903,7 @@ fn cedar(b: &mut Builder, lod: u8) {
                 let p = Vec3::Y * (y + 0.6 + 0.4 * k) + out * reach * k;
                 let w = r * s * rng.range(0.85, 1.1);
                 let tone = (0.75 + 0.1 * i as f32) * rng.range(0.88, 1.12);
-                b.blob(p, Vec3::new(w, 0.55 + 0.1 * w, w), 1, 0.4, 193 + (i * 8 + j * 2) as u64, color.map(|c| c * tone), LEAF_SWAY);
+                b.leafy(p, Vec3::new(w, 0.55 + 0.1 * w, w), 193 + (i * 8 + j * 2) as u64, color.map(|c| c * tone), LEAF_SWAY);
             }
         }
     }
@@ -867,7 +935,7 @@ fn column(b: &mut Builder, lod: u8, seed: u64, height: f32, radius: f32, base: f
         let h = (height - base) / clumps as f32 * 1.9;
         let tone = (0.75 + 0.45 * k) * rng.range(0.88, 1.12);
         b.limb(Vec3::Y * (y - h * 0.3), Vec3::Y * y + off * 1.3, 0.05, 0.02, 3, bark, 0.0);
-        b.blob(Vec3::Y * y + off, Vec3::new(s, h, s), 1, 0.35, seed + 1 + i as u64, color.map(|c| c * tone), LEAF_SWAY);
+        b.leafy(Vec3::Y * y + off, Vec3::new(s, h, s), seed + 1 + i as u64, color.map(|c| c * tone), LEAF_SWAY);
     }
 }
 
@@ -972,7 +1040,7 @@ fn dragon_tree(b: &mut Builder, lod: u8) {
             b.limb(mid, tip, 0.22, 0.13, 4, bark, 0.0);
             // Rosette : un coussin dense, herisse de lames raides qui partent en etoile.
             let tone = color.map(|v| v * rng.range(0.85, 1.1));
-            b.blob(tip + Vec3::Y * 0.35, Vec3::new(1.25, 0.6, 1.25), 1, 0.35, 163 + (i * 2) as u64, tone, LEAF_SWAY);
+            b.leafy(tip + Vec3::Y * 0.35, Vec3::new(1.25, 0.6, 1.25), 163 + (i * 2) as u64, tone, LEAF_SWAY);
             for k in 0..14 {
                 let c = k as f32 * 2.399963;
                 let blade = Vec3::new(c.cos() * 0.9, 0.35 + 0.5 * ((k % 3) as f32 / 2.0), c.sin() * 0.9).normalize();

@@ -296,6 +296,25 @@ impl Streamer {
         }
     }
 
+    /// Charge d'avance le monde vu depuis `cam`, sur le thread appelant, jusqu'a ce que tout soit pret ou
+    /// que `budget` soit ecoule. Rend les chunks a envoyer au rendu. Sert a preparer une nouvelle planete
+    /// pendant qu'on joue encore sur l'ancienne : a l'arrivee, le paysage est deja la.
+    pub fn prewarm(&mut self, cam: DVec3, budget: std::time::Duration) -> StreamUpdate {
+        let start = std::time::Instant::now();
+        let mut all = StreamUpdate::default();
+        while start.elapsed() < budget {
+            let mut update = self.update(cam);
+            all.evicted.extend(update.evicted.iter().copied());
+            all.new_chunks.retain(|m| !update.evicted.contains(&m.id));
+            all.new_chunks.append(&mut update.new_chunks);
+            if self.idle && update.new_chunks.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        all
+    }
+
     /// Nombre de chunks en memoire.
     pub fn loaded_chunks(&self) -> usize {
         self.loaded.len()

@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use terra::app::{Context, EngineConfig, Game, GameEvent, MAX_WINDOW_SIZE, MIN_WINDOW_SIZE};
 use terra::player::{world_lock, PlayerController};
 use terra::vehicle::{parking_spot, Car, View};
-use terra::world::generator::{lat_lon_to_dir, planet_radius, PlanetParams};
+use terra::sky::Sky;
+use terra::world::generator::{lat_lon_to_dir, planet_radius, Generator, PlanetParams};
 use terra::Camera;
 use winit::keyboard::KeyCode;
 
@@ -102,17 +103,29 @@ impl Explorer {
     }
 
     /// Le point de vue d'arrivee : la rive d'une grande etendue d'eau, face au soleil couchant.
-    fn vista(ctx: &mut Context) -> (DVec3, f32) {
-        let sky = &*ctx.sky;
-        ctx.world.find_vista(|d| sky.evening_sun(d, EVENING_SUN)).unwrap_or_else(|| {
-            let dir = ctx.world.find_spawn();
-            (dir, ctx.world.yaw_towards_water(dir))
+    fn vista_on(world: &Generator, sky: &Sky) -> (DVec3, f32) {
+        world.find_vista(|d| sky.evening_sun(d, EVENING_SUN)).unwrap_or_else(|| {
+            let dir = world.find_spawn();
+            (dir, world.yaw_towards_water(dir))
         })
+    }
+
+    /// Pour le moteur : sur une nouvelle planete, la camera se pose seulement si elle n'est pas dans
+    /// l'espace (voir `PlanetChanged`). Le paysage de ce point se prepare alors en arriere-plan.
+    fn landing(world: &Generator, sky: &Sky, altitude: f64) -> Option<(DVec3, f32)> {
+        (altitude < KEEP_ALTITUDE).then(|| Self::vista_on(world, sky))
+    }
+
+    fn vista(ctx: &mut Context) -> (DVec3, f32) {
+        match ctx.world.landing.get() {
+            Some(spot) => *spot,
+            None => Self::vista_on(ctx.world, ctx.sky),
+        }
     }
 
     fn go_to_surface(&mut self, ctx: &mut Context) {
         let (dir, yaw) = Self::vista(ctx);
-        let r = planet_radius() + ctx.world.height(dir).max(0.0) as f64 + 1.75;
+        let r = planet_radius() + ctx.world.height(dir).max(0.0) as f64 + terra::app::EYE_HEIGHT;
         *ctx.camera = Camera::new(dir * r, yaw - FRAMING, 0.03);
         let time = ctx.sky.evening_time(dir, EVENING_SUN);
         ctx.sky.set_local_time(dir, time);
@@ -376,7 +389,7 @@ where
 }
 
 fn main() {
-    let mut config = EngineConfig { title: "Terra".to_string(), ..Default::default() };
+    let mut config = EngineConfig { title: "Terra".to_string(), landing: Some(Explorer::landing), ..Default::default() };
     let mut options = Options::default();
 
     let mut args = std::env::args().skip(1);
